@@ -22,40 +22,79 @@ def init_weights(m):
 
 
 class ResidualUnit(nn.Module):
-    def __init__(self, dim: int = 16, dilation: int = 1):
+    def __init__(self, dim: int = 16, dilation: int = 1, causal: bool = False):
         super().__init__()
-        pad = ((7 - 1) * dilation) // 2
-        self.block = nn.Sequential(
-            Snake1d(dim),
-            WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
-            Snake1d(dim),
-            WNConv1d(dim, dim, kernel_size=1),
-        )
+        self.causal = causal
+        # print("[resunit causal]", causal)
+
+        if causal:
+            pad = (7 - 1) * dilation
+            self.block = self.block = nn.Sequential(
+                Snake1d(dim),
+                nn.ZeroPad1d((pad, 0)),
+                WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=0),
+                Snake1d(dim),
+                WNConv1d(dim, dim, kernel_size=1),
+            )
+        else:
+            pad = ((7 - 1) * dilation) // 2
+            self.block = nn.Sequential(
+                Snake1d(dim),
+                WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
+                Snake1d(dim),
+                WNConv1d(dim, dim, kernel_size=1),
+            )
 
     def forward(self, x):
         y = self.block(x)
-        pad = (x.shape[-1] - y.shape[-1]) // 2
-        if pad > 0:
-            x = x[..., pad:-pad]
+
+        if self.causal:
+            pad = x.shape[-1] - y.shape[-1]
+            if pad > 0:
+                x = x[..., pad:]
+        else:
+            pad = (x.shape[-1] - y.shape[-1]) // 2
+            if pad > 0:
+                x = x[..., pad:-pad]
+
         return x + y
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, dim: int = 16, stride: int = 1):
+    def __init__(self, dim: int = 16, stride: int = 1, causal: bool = False):
         super().__init__()
-        self.block = nn.Sequential(
-            ResidualUnit(dim // 2, dilation=1),
-            ResidualUnit(dim // 2, dilation=3),
-            ResidualUnit(dim // 2, dilation=9),
-            Snake1d(dim // 2),
-            WNConv1d(
-                dim // 2,
-                dim,
-                kernel_size=2 * stride,
-                stride=stride,
-                padding=math.ceil(stride / 2),
-            ),
-        )
+        self.causal = causal
+        # print("[encblock causal]", causal)
+
+        if causal:
+            self.block = nn.Sequential(
+                ResidualUnit(dim // 2, dilation=1, causal=True),
+                ResidualUnit(dim // 2, dilation=3, causal=True),
+                ResidualUnit(dim // 2, dilation=9, causal=True),
+                Snake1d(dim // 2),
+                nn.ZeroPad1d(((2 * stride - 1, 0))),
+                WNConv1d(
+                    dim // 2,
+                    dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=0,
+                ),
+            )
+        else:
+            self.block = nn.Sequential(
+                ResidualUnit(dim // 2, dilation=1),
+                ResidualUnit(dim // 2, dilation=3),
+                ResidualUnit(dim // 2, dilation=9),
+                Snake1d(dim // 2),
+                WNConv1d(
+                    dim // 2,
+                    dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=math.ceil(stride / 2),
+                ),
+            )
 
     def forward(self, x):
         return self.block(x)
@@ -67,21 +106,37 @@ class Encoder(nn.Module):
         d_model: int = 64,
         strides: list = [2, 4, 8, 8],
         d_latent: int = 64,
+        causal: bool = False,
     ):
         super().__init__()
+        self.causal = causal
         # Create first convolution
-        self.block = [WNConv1d(1, d_model, kernel_size=7, padding=3)]
+
+        if causal:
+            self.block = [
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(1, d_model, kernel_size=7, padding=0),
+            ]
+        else:
+            self.block = [WNConv1d(1, d_model, kernel_size=7, padding=3)]
 
         # Create EncoderBlocks that double channels as they downsample by `stride`
         for stride in strides:
             d_model *= 2
-            self.block += [EncoderBlock(d_model, stride=stride)]
+            self.block += [EncoderBlock(d_model, stride=stride, causal=causal)]
 
         # Create last convolution
-        self.block += [
-            Snake1d(d_model),
-            WNConv1d(d_model, d_latent, kernel_size=3, padding=1),
-        ]
+        if causal:
+            self.block += [
+                Snake1d(d_model),
+                nn.ZeroPad1d((2, 0)),
+                WNConv1d(d_model, d_latent, kernel_size=3, padding=0),
+            ]
+        else:
+            self.block += [
+                Snake1d(d_model),
+                WNConv1d(d_model, d_latent, kernel_size=3, padding=1),
+            ]
 
         # Wrap black into nn.Sequential
         self.block = nn.Sequential(*self.block)
@@ -92,21 +147,45 @@ class Encoder(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, input_dim: int = 16, output_dim: int = 8, stride: int = 1):
+    def __init__(
+        self,
+        input_dim: int = 16,
+        output_dim: int = 8,
+        stride: int = 1,
+        causal: bool = False,
+    ):
         super().__init__()
-        self.block = nn.Sequential(
-            Snake1d(input_dim),
-            WNConvTranspose1d(
-                input_dim,
-                output_dim,
-                kernel_size=2 * stride,
-                stride=stride,
-                padding=math.ceil(stride / 2),
-            ),
-            ResidualUnit(output_dim, dilation=1),
-            ResidualUnit(output_dim, dilation=3),
-            ResidualUnit(output_dim, dilation=9),
-        )
+        self.causal = causal
+        # print("[decblock causal]", causal)
+
+        if causal:
+            self.block = nn.Sequential(
+                Snake1d(input_dim),
+                WNConvTranspose1d(
+                    input_dim,
+                    output_dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=0,
+                ),
+                ResidualUnit(output_dim, dilation=1, causal=True),
+                ResidualUnit(output_dim, dilation=3, causal=True),
+                ResidualUnit(output_dim, dilation=9, causal=True),
+            )
+        else:
+            self.block = nn.Sequential(
+                Snake1d(input_dim),
+                WNConvTranspose1d(
+                    input_dim,
+                    output_dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=math.ceil(stride / 2),
+                ),
+                ResidualUnit(output_dim, dilation=1),
+                ResidualUnit(output_dim, dilation=3),
+                ResidualUnit(output_dim, dilation=9),
+            )
 
     def forward(self, x):
         return self.block(x)
@@ -119,24 +198,40 @@ class Decoder(nn.Module):
         channels,
         rates,
         d_out: int = 1,
+        causal: bool = False,
     ):
         super().__init__()
+        self.causal = causal
 
         # Add first conv layer
-        layers = [WNConv1d(input_channel, channels, kernel_size=7, padding=3)]
+        if causal:
+            layers = [
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(input_channel, channels, kernel_size=7, padding=0),
+            ]
+        else:
+            layers = [WNConv1d(input_channel, channels, kernel_size=7, padding=3)]
 
         # Add upsampling + MRF blocks
         for i, stride in enumerate(rates):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
-            layers += [DecoderBlock(input_dim, output_dim, stride)]
+            layers += [DecoderBlock(input_dim, output_dim, stride, causal=causal)]
 
         # Add final conv layer
-        layers += [
-            Snake1d(output_dim),
-            WNConv1d(output_dim, d_out, kernel_size=7, padding=3),
-            nn.Tanh(),
-        ]
+        if causal:
+            layers += [
+                Snake1d(output_dim),
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(output_dim, d_out, kernel_size=7, padding=0),
+                nn.Tanh(),
+            ]
+        else:
+            layers += [
+                Snake1d(output_dim),
+                WNConv1d(output_dim, d_out, kernel_size=7, padding=3),
+                nn.Tanh(),
+            ]
 
         self.model = nn.Sequential(*layers)
 
@@ -156,15 +251,21 @@ class DAC(BaseModel, CodecMixin):
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
         quantizer_dropout: bool = False,
+        causal_encoder: bool = False,
+        causal_decoder: bool = False,
         sample_rate: int = 44100,
     ):
         super().__init__()
+        print("[codebook size]", codebook_size)
+        print("[# codebooks]", n_codebooks)
 
         self.encoder_dim = encoder_dim
         self.encoder_rates = encoder_rates
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
+        self.causal_encoder = causal_encoder
+        self.causal_decoder = causal_decoder
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -172,7 +273,9 @@ class DAC(BaseModel, CodecMixin):
         self.latent_dim = latent_dim
 
         self.hop_length = np.prod(encoder_rates)
-        self.encoder = Encoder(encoder_dim, encoder_rates, latent_dim)
+        self.encoder = Encoder(
+            encoder_dim, encoder_rates, latent_dim, causal=causal_encoder
+        )
 
         self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size
@@ -189,11 +292,17 @@ class DAC(BaseModel, CodecMixin):
             latent_dim,
             decoder_dim,
             decoder_rates,
+            causal=causal_decoder,
         )
         self.sample_rate = sample_rate
         self.apply(init_weights)
 
         self.delay = self.get_delay()
+
+        print(
+            "[# trainable params]",
+            sum([p.numel() for p in self.parameters() if p.requires_grad]),
+        )
 
     def preprocess(self, audio_data, sample_rate):
         if sample_rate is None:
@@ -312,14 +421,26 @@ class DAC(BaseModel, CodecMixin):
         )
 
         x = self.decode(z)
-        return {
-            "audio": x[..., :length],
-            "z": z,
-            "codes": codes,
-            "latents": latents,
-            "vq/commitment_loss": commitment_loss,
-            "vq/codebook_loss": codebook_loss,
-        }
+
+        if self.causal_decoder:
+            start_samp = self.hop_length - 1
+            return {
+                "audio": x[..., start_samp : start_samp + length],
+                "z": z,
+                "codes": codes,
+                "latents": latents,
+                "vq/commitment_loss": commitment_loss,
+                "vq/codebook_loss": codebook_loss,
+            }
+        else:
+            return {
+                "audio": x[..., :length],
+                "z": z,
+                "codes": codes,
+                "latents": latents,
+                "vq/commitment_loss": commitment_loss,
+                "vq/codebook_loss": codebook_loss,
+            }
 
 
 if __name__ == "__main__":
