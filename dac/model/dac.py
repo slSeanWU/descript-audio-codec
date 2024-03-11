@@ -9,6 +9,7 @@ from audiotools.ml import BaseModel
 from torch import nn
 
 from .base import CodecMixin
+from .s4 import FFTConv
 from dac.nn.layers import Snake1d
 from dac.nn.layers import WNConv1d
 from dac.nn.layers import WNConvTranspose1d
@@ -21,6 +22,36 @@ def init_weights(m):
         nn.init.constant_(m.bias, 0)
 
 
+class ResidualS4Unit(nn.Module):
+    def __init__(self, dim: int = 16):
+        super().__init__()
+
+        self.block1 = nn.Sequential(
+            FFTConv(d_model=dim, mode="diag", transposed=True, activation="id"),
+            Snake1d(dim),
+        )
+        self.lin1 = nn.Linear(dim, dim)
+
+        self.block2 = nn.Sequential(
+            FFTConv(d_model=dim, mode="diag", transposed=True, activation="id"),
+            Snake1d(dim),
+        )
+        self.lin2 = nn.Linear(dim, dim)
+
+    def forward(self, x):
+        y = self.block1(x)
+        y = y.transpose(-2, -1)
+        y = self.lin1(y)
+        y = y.transpose(-2, -1)
+
+        y = self.block2(x)
+        y = y.transpose(-2, -1)
+        y = self.lin2(y)
+        y = y.transpose(-2, -1)
+
+        return x + y
+
+
 class ResidualUnit(nn.Module):
     def __init__(self, dim: int = 16, dilation: int = 1, causal: bool = False):
         super().__init__()
@@ -29,7 +60,7 @@ class ResidualUnit(nn.Module):
 
         if causal:
             pad = (7 - 1) * dilation
-            self.block = self.block = nn.Sequential(
+            self.block = nn.Sequential(
                 Snake1d(dim),
                 nn.ZeroPad1d((pad, 0)),
                 WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=0),
@@ -58,6 +89,43 @@ class ResidualUnit(nn.Module):
                 x = x[..., pad:-pad]
 
         return x + y
+
+
+class EncoderS4Block(nn.Module):
+    def __init__(self, dim: int = 16, stride: int = 1):
+        super().__init__()
+
+        self.block = nn.Sequential(
+            ResidualS4Unit(dim // 2),
+            ResidualS4Unit(dim // 2),
+            ResidualS4Unit(dim // 2),
+            ResidualS4Unit(dim // 2),
+            ResidualS4Unit(dim // 2),
+            ResidualS4Unit(dim // 2),
+            Snake1d(dim // 2),
+            FFTConv(d_model=dim // 2, mode="diag", transposed=True, activation="id"),
+            Snake1d(dim // 2),
+        )
+
+        self.lin = nn.Linear(dim // 2, dim)
+        if stride > 1:
+            self.downsample = nn.Sequential(
+                nn.ZeroPad1d((stride - 1, 0)),  # Pad to the left to maintain causalness
+                nn.AvgPool1d(kernel_size=stride, stride=stride),
+            )
+        else:
+            self.downsample = None
+
+    def forward(self, x):
+        y = self.block(x)
+        y = y.transpose(-2, -1)
+        y = self.lin(y)
+        y = y.transpose(-2, -1)
+
+        if self.downsample is not None:
+            y = self.downsample(y)
+
+        return y
 
 
 class EncoderBlock(nn.Module):
@@ -98,6 +166,50 @@ class EncoderBlock(nn.Module):
 
     def forward(self, x):
         return self.block(x)
+
+
+class EncoderS4(nn.Module):
+    def __init__(
+        self, d_model: int = 64, strides: list = [2, 4, 8, 8], d_latent: int = 64
+    ):
+        super().__init__()
+
+        # Create first S4
+        self.init_block = FFTConv(
+            d_model=1, mode="diag", transposed=True, activation="id"
+        )
+        self.init_lin = nn.Linear(1, d_model)
+
+        self.block = []
+        # Create EncoderBlocks that double channels as they downsample by `stride`
+        for stride in strides:
+            d_model *= 2
+            self.block += [EncoderS4Block(d_model, stride=stride)]
+
+        # Create last S4
+        self.final_block = nn.Sequential(
+            Snake1d(d_model),
+            FFTConv(d_model=d_model, mode="diag", transposed=True, activation="id"),
+        )
+        self.final_lin = nn.Linear(d_model, d_latent)
+
+        # Wrap black into nn.Sequential
+        self.block = nn.Sequential(*self.block)
+        self.enc_dim = d_model
+
+    def forward(self, x):
+        y = self.init_block(x)
+        y = y.transpose(-2, -1)
+        y = self.init_lin(y)
+        y = y.transpose(-2, -1)
+
+        y = self.block(y)
+        y = self.final_block(y)
+        y = y.transpose(-2, -1)
+        y = self.final_lin(y)
+        y = y.transpose(-2, -1)
+
+        return y
 
 
 class Encoder(nn.Module):
@@ -146,6 +258,57 @@ class Encoder(nn.Module):
         return self.block(x)
 
 
+class LinearUpsampleForS4(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, stride: int):
+        super().__init__()
+
+        assert input_dim % output_dim == 0
+        upscaling_factor = stride // (input_dim // output_dim)
+
+        self.act = Snake1d(input_dim)
+        self.output_dim = output_dim
+        self.stride = stride
+        self.lin = nn.Linear(input_dim, upscaling_factor * input_dim)
+
+    def forward(self, x):
+        orig_seqlen = x.size(-1)
+
+        y = self.act(x)
+
+        y = y.transpose(-2, -1)  # (B, L, C)
+        y = self.lin(y)  # (B, L, C * scale)
+        y = y.reshape(y.size(0), y.size(1) * self.stride, -1)  # (B, L * stride, C_out)
+        y = y.transpose(-2, -1)  # (B, C_out, L * stride)
+
+        assert y.size(-2) == self.output_dim
+        assert y.size(-1) == orig_seqlen * self.stride
+
+        return y
+
+
+class DecoderS4Block(nn.Module):
+    def __init__(
+        self,
+        input_dim: int = 16,
+        output_dim: int = 8,
+        stride: int = 1,
+    ):
+        super().__init__()
+
+        self.block = nn.Sequential(
+            LinearUpsampleForS4(input_dim, output_dim, stride),
+            ResidualS4Unit(output_dim),
+            ResidualS4Unit(output_dim),
+            ResidualS4Unit(output_dim),
+            ResidualS4Unit(output_dim),
+            ResidualS4Unit(output_dim),
+            ResidualS4Unit(output_dim),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
 class DecoderBlock(nn.Module):
     def __init__(
         self,
@@ -189,6 +352,56 @@ class DecoderBlock(nn.Module):
 
     def forward(self, x):
         return self.block(x)
+
+
+class DecoderS4(nn.Module):
+    def __init__(
+        self,
+        input_channel,
+        channels,
+        rates,
+        d_out: int = 1,
+    ):
+        super().__init__()
+
+        # Add first s4 layer
+        self.init_block = FFTConv(
+            d_model=input_channel, mode="diag", transposed=True, activation="id"
+        )
+        self.init_lin = nn.Linear(input_channel, channels)
+
+        layers = []
+        # Add upsampling + MRF blocks
+        for i, stride in enumerate(rates):
+            input_dim = channels // 2**i
+            output_dim = channels // 2 ** (i + 1)
+            layers += [DecoderS4Block(input_dim, output_dim, stride)]
+
+        # Add final conv layer
+
+        self.final_block = nn.Sequential(
+            Snake1d(output_dim),
+            FFTConv(d_model=output_dim, mode="diag", transposed=True, activation="id"),
+        )
+        self.final_lin = nn.Linear(output_dim, d_out)
+        self.final_act = nn.Tanh()
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        y = self.init_block(x)
+        y = y.transpose(-2, -1)
+        y = self.init_lin(y)
+        y = y.transpose(-2, -1)
+
+        y = self.model(y)
+        y = self.final_block(y)
+        y = y.transpose(-2, -1)
+        y = self.final_lin(y)
+        y = y.transpose(-2, -1)
+        y = self.final_act(y)
+
+        return y
 
 
 class Decoder(nn.Module):
@@ -253,6 +466,7 @@ class DAC(BaseModel, CodecMixin):
         quantizer_dropout: bool = False,
         causal_encoder: bool = False,
         causal_decoder: bool = False,
+        use_s4: bool = False,
         sample_rate: int = 44100,
     ):
         super().__init__()
@@ -273,9 +487,16 @@ class DAC(BaseModel, CodecMixin):
         self.latent_dim = latent_dim
 
         self.hop_length = np.prod(encoder_rates)
-        self.encoder = Encoder(
-            encoder_dim, encoder_rates, latent_dim, causal=causal_encoder
-        )
+        if use_s4:
+            self.encoder = EncoderS4(
+                encoder_dim,
+                encoder_rates,
+                latent_dim,
+            )
+        else:
+            self.encoder = Encoder(
+                encoder_dim, encoder_rates, latent_dim, causal=causal_encoder
+            )
 
         self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size
@@ -288,12 +509,19 @@ class DAC(BaseModel, CodecMixin):
             quantizer_dropout=quantizer_dropout,
         )
 
-        self.decoder = Decoder(
-            latent_dim,
-            decoder_dim,
-            decoder_rates,
-            causal=causal_decoder,
-        )
+        if use_s4:
+            self.decoder = DecoderS4(
+                latent_dim,
+                decoder_dim,
+                decoder_rates,
+            )
+        else:
+            self.decoder = Decoder(
+                latent_dim,
+                decoder_dim,
+                decoder_rates,
+                causal=causal_decoder,
+            )
         self.sample_rate = sample_rate
         self.apply(init_weights)
 
@@ -302,6 +530,14 @@ class DAC(BaseModel, CodecMixin):
         print(
             "[# trainable params]",
             sum([p.numel() for p in self.parameters() if p.requires_grad]),
+        )
+        print(
+            "[# trainable params (enc)]",
+            sum([p.numel() for p in self.encoder.parameters() if p.requires_grad]),
+        )
+        print(
+            "[# trainable params (dec)]",
+            sum([p.numel() for p in self.decoder.parameters() if p.requires_grad]),
         )
 
     def preprocess(self, audio_data, sample_rate):
