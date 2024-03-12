@@ -26,28 +26,18 @@ class ResidualS4Unit(nn.Module):
     def __init__(self, dim: int = 16):
         super().__init__()
 
-        self.block1 = nn.Sequential(
+        self.block = nn.Sequential(
+            Snake1d(dim),
             FFTConv(d_model=dim, mode="diag", transposed=True, activation="id"),
             Snake1d(dim),
+            nn.Conv1d(
+                dim, dim * 2, kernel_size=1
+            ),  # GLU+linear source: https://github.com/state-spaces/s4/blob/main/models/s4/s4d.py
+            nn.GLU(dim=-2),
         )
-        self.lin1 = nn.Linear(dim, dim)
-
-        self.block2 = nn.Sequential(
-            FFTConv(d_model=dim, mode="diag", transposed=True, activation="id"),
-            Snake1d(dim),
-        )
-        self.lin2 = nn.Linear(dim, dim)
 
     def forward(self, x):
-        y = self.block1(x)
-        y = y.transpose(-2, -1)
-        y = self.lin1(y)
-        y = y.transpose(-2, -1)
-
-        y = self.block2(x)
-        y = y.transpose(-2, -1)
-        y = self.lin2(y)
-        y = y.transpose(-2, -1)
+        y = self.block(x)
 
         return x + y
 
@@ -92,40 +82,45 @@ class ResidualUnit(nn.Module):
 
 
 class EncoderS4Block(nn.Module):
-    def __init__(self, dim: int = 16, stride: int = 1):
+    def __init__(self, dim: int = 16, stride: int = 1, keep_conv_end: bool = True):
         super().__init__()
 
-        self.block = nn.Sequential(
-            ResidualS4Unit(dim // 2),
-            ResidualS4Unit(dim // 2),
-            ResidualS4Unit(dim // 2),
-            ResidualS4Unit(dim // 2),
-            ResidualS4Unit(dim // 2),
-            ResidualS4Unit(dim // 2),
-            Snake1d(dim // 2),
-            FFTConv(d_model=dim // 2, mode="diag", transposed=True, activation="id"),
-            Snake1d(dim // 2),
-        )
-
-        self.lin = nn.Linear(dim // 2, dim)
-        if stride > 1:
-            self.downsample = nn.Sequential(
-                nn.ZeroPad1d((stride - 1, 0)),  # Pad to the left to maintain causalness
-                nn.AvgPool1d(kernel_size=stride, stride=stride),
+        if keep_conv_end:
+            self.block = nn.Sequential(
+                ResidualS4Unit(dim // 2),
+                ResidualS4Unit(dim // 2),
+                ResidualS4Unit(dim // 2),
+                Snake1d(dim // 2),
+                FFTConv(
+                    d_model=dim // 2, mode="diag", transposed=True, activation="id"
+                ),
+                Snake1d(dim // 2),
+                nn.ZeroPad1d((2 * stride - 1, 0)),
+                WNConv1d(
+                    dim // 2,
+                    dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=0,
+                ),
             )
         else:
-            self.downsample = None
+            self.block = nn.Sequential(
+                ResidualS4Unit(dim // 2),
+                ResidualS4Unit(dim // 2),
+                ResidualS4Unit(dim // 2),
+                Snake1d(dim // 2),
+                FFTConv(
+                    d_model=dim // 2, mode="diag", transposed=True, activation="id"
+                ),
+                Snake1d(dim // 2),
+                WNConv1d(dim // 2, dim, kernel_size=1),
+                nn.ZeroPad1d((stride - 1, 0)),
+                nn.AvgPool1d(kernel_size=stride, stride=stride),
+            )
 
     def forward(self, x):
-        y = self.block(x)
-        y = y.transpose(-2, -1)
-        y = self.lin(y)
-        y = y.transpose(-2, -1)
-
-        if self.downsample is not None:
-            y = self.downsample(y)
-
-        return y
+        return self.block(x)
 
 
 class EncoderBlock(nn.Module):
@@ -140,7 +135,7 @@ class EncoderBlock(nn.Module):
                 ResidualUnit(dim // 2, dilation=3, causal=True),
                 ResidualUnit(dim // 2, dilation=9, causal=True),
                 Snake1d(dim // 2),
-                nn.ZeroPad1d(((2 * stride - 1, 0))),
+                nn.ZeroPad1d((2 * stride - 1, 0)),
                 WNConv1d(
                     dim // 2,
                     dim,
@@ -170,46 +165,51 @@ class EncoderBlock(nn.Module):
 
 class EncoderS4(nn.Module):
     def __init__(
-        self, d_model: int = 64, strides: list = [2, 4, 8, 8], d_latent: int = 64
+        self,
+        d_model: int = 64,
+        strides: list = [2, 4, 8, 8],
+        d_latent: int = 64,
+        keep_conv_init_end: bool = True,
     ):
         super().__init__()
 
-        # Create first S4
-        self.init_block = FFTConv(
-            d_model=1, mode="diag", transposed=True, activation="id"
-        )
-        self.init_lin = nn.Linear(1, d_model)
+        # Create first conv/S4
+        if keep_conv_init_end:
+            self.block = [
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(1, d_model, kernel_size=7, padding=0),
+            ]
+        else:
+            self.block = [
+                FFTConv(d_model=1, mode="diag", transposed=True, activation="id"),
+                WNConv1d(1, d_model, kernel_size=1),
+            ]
 
-        self.block = []
         # Create EncoderBlocks that double channels as they downsample by `stride`
         for stride in strides:
             d_model *= 2
             self.block += [EncoderS4Block(d_model, stride=stride)]
 
-        # Create last S4
-        self.final_block = nn.Sequential(
-            Snake1d(d_model),
-            FFTConv(d_model=d_model, mode="diag", transposed=True, activation="id"),
-        )
-        self.final_lin = nn.Linear(d_model, d_latent)
+        # Create last conv/s4
+        if keep_conv_init_end:
+            self.block += [
+                Snake1d(d_model),
+                nn.ZeroPad1d((2, 0)),
+                WNConv1d(d_model, d_latent, kernel_size=3, padding=0),
+            ]
+        else:
+            self.block += [
+                Snake1d(d_model),
+                FFTConv(d_model=d_model, mode="diag", transposed=True, activation="id"),
+                WNConv1d(d_model, d_latent, kernel_size=1),
+            ]
 
         # Wrap black into nn.Sequential
         self.block = nn.Sequential(*self.block)
         self.enc_dim = d_model
 
     def forward(self, x):
-        y = self.init_block(x)
-        y = y.transpose(-2, -1)
-        y = self.init_lin(y)
-        y = y.transpose(-2, -1)
-
-        y = self.block(y)
-        y = self.final_block(y)
-        y = y.transpose(-2, -1)
-        y = self.final_lin(y)
-        y = y.transpose(-2, -1)
-
-        return y
+        return self.block(x)
 
 
 class Encoder(nn.Module):
@@ -264,21 +264,19 @@ class LinearUpsampleForS4(nn.Module):
 
         assert input_dim % output_dim == 0
         upscaling_factor = stride // (input_dim // output_dim)
-
-        self.act = Snake1d(input_dim)
         self.output_dim = output_dim
         self.stride = stride
-        self.lin = nn.Linear(input_dim, upscaling_factor * input_dim)
+
+        self.block = nn.Sequential(
+            Snake1d(input_dim),
+            nn.Conv1d(input_dim, upscaling_factor * input_dim, kernel_size=1),
+        )
 
     def forward(self, x):
         orig_seqlen = x.size(-1)
 
-        y = self.act(x)
-
-        y = y.transpose(-2, -1)  # (B, L, C)
-        y = self.lin(y)  # (B, L, C * scale)
-        y = y.reshape(y.size(0), y.size(1) * self.stride, -1)  # (B, L * stride, C_out)
-        y = y.transpose(-2, -1)  # (B, C_out, L * stride)
+        y = self.block(x)
+        y = y.reshape(y.size(0), -1, self.stride * orig_seqlen)
 
         assert y.size(-2) == self.output_dim
         assert y.size(-1) == orig_seqlen * self.stride
@@ -292,18 +290,31 @@ class DecoderS4Block(nn.Module):
         input_dim: int = 16,
         output_dim: int = 8,
         stride: int = 1,
+        keep_conv_upsample: bool = True,
     ):
         super().__init__()
 
-        self.block = nn.Sequential(
-            LinearUpsampleForS4(input_dim, output_dim, stride),
-            ResidualS4Unit(output_dim),
-            ResidualS4Unit(output_dim),
-            ResidualS4Unit(output_dim),
-            ResidualS4Unit(output_dim),
-            ResidualS4Unit(output_dim),
-            ResidualS4Unit(output_dim),
-        )
+        if keep_conv_upsample:
+            self.block = nn.Sequential(
+                Snake1d(input_dim),
+                WNConvTranspose1d(
+                    input_dim,
+                    output_dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=0,
+                ),
+                ResidualS4Unit(output_dim),
+                ResidualS4Unit(output_dim),
+                ResidualS4Unit(output_dim),
+            )
+        else:
+            self.block = nn.Sequential(
+                LinearUpsampleForS4(input_dim, output_dim, stride),
+                ResidualS4Unit(output_dim),
+                ResidualS4Unit(output_dim),
+                ResidualS4Unit(output_dim),
+            )
 
     def forward(self, x):
         return self.block(x)
@@ -361,47 +372,52 @@ class DecoderS4(nn.Module):
         channels,
         rates,
         d_out: int = 1,
+        keep_conv_init_end: bool = True,
     ):
         super().__init__()
 
-        # Add first s4 layer
-        self.init_block = FFTConv(
-            d_model=input_channel, mode="diag", transposed=True, activation="id"
-        )
-        self.init_lin = nn.Linear(input_channel, channels)
+        # Add first conv/s4 layer
+        if keep_conv_init_end:
+            layers = [
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(input_channel, channels, kernel_size=7, padding=0),
+            ]
+        else:
+            layers = [
+                FFTConv(
+                    d_model=input_channel, mode="diag", transposed=True, activation="id"
+                ),
+                WNConv1d(input_channel, channels, kernel_size=1),
+            ]
 
-        layers = []
         # Add upsampling + MRF blocks
         for i, stride in enumerate(rates):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
             layers += [DecoderS4Block(input_dim, output_dim, stride)]
 
-        # Add final conv layer
-
-        self.final_block = nn.Sequential(
-            Snake1d(output_dim),
-            FFTConv(d_model=output_dim, mode="diag", transposed=True, activation="id"),
-        )
-        self.final_lin = nn.Linear(output_dim, d_out)
-        self.final_act = nn.Tanh()
+        # Add final conv/s4
+        if keep_conv_init_end:
+            layers += [
+                Snake1d(output_dim),
+                nn.ZeroPad1d((6, 0)),
+                WNConv1d(output_dim, d_out, kernel_size=7, padding=0),
+                nn.Tanh(),
+            ]
+        else:
+            layers += [
+                Snake1d(output_dim),
+                FFTConv(
+                    d_model=output_dim, mode="diag", transposed=True, activation="id"
+                ),
+                WNConv1d(output_dim, d_out, kernel_size=1),
+                nn.Tanh(),
+            ]
 
         self.model = nn.Sequential(*layers)
 
     def forward(self, x):
-        y = self.init_block(x)
-        y = y.transpose(-2, -1)
-        y = self.init_lin(y)
-        y = y.transpose(-2, -1)
-
-        y = self.model(y)
-        y = self.final_block(y)
-        y = y.transpose(-2, -1)
-        y = self.final_lin(y)
-        y = y.transpose(-2, -1)
-        y = self.final_act(y)
-
-        return y
+        return self.model(x)
 
 
 class Decoder(nn.Module):
