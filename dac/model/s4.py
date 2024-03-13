@@ -10,7 +10,8 @@ from scipy import special as ss
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_lightning.utilities import rank_zero_only
+
+# from pytorch_lightning.utilities import rank_zero_only
 from einops import rearrange, repeat
 
 # Function aliases
@@ -33,16 +34,16 @@ def get_logger(name=__name__, level=logging.INFO) -> logging.Logger:
 
     # this ensures all logging levels get marked with the rank zero decorator
     # otherwise logs would get multiplied for each GPU process in multi-GPU setup
-    for level in (
-        "debug",
-        "info",
-        "warning",
-        "error",
-        "exception",
-        "fatal",
-        "critical",
-    ):
-        setattr(logger, level, rank_zero_only(getattr(logger, level)))
+    # for level in (
+    #     "debug",
+    #     "info",
+    #     "warning",
+    #     "error",
+    #     "exception",
+    #     "fatal",
+    #     "critical",
+    # ):
+    #     setattr(logger, level, rank_zero_only(getattr(logger, level)))
 
     return logger
 
@@ -53,8 +54,8 @@ log = get_logger(__name__)
 
 # Try CUDA extension
 try:
-    from extensions.kernels.cauchy import cauchy_mult as cauchy_cuda
-    from extensions.kernels.vandermonde import log_vandermonde_cuda
+    from .extensions.kernels.cauchy import cauchy_mult as cauchy_cuda
+    from .extensions.kernels.vandermonde import log_vandermonde_cuda
 
     has_cuda_extension = True
     log.info(
@@ -726,6 +727,10 @@ def param_transform(param, transform="none"):
     return p
 
 
+def return_same(arg):
+    return arg
+
+
 class Kernel(nn.Module):
     """Interface for modules that produce convolution kernels.
 
@@ -796,17 +801,21 @@ class Kernel(nn.Module):
         # Case 2: lr: dict
         #   Specified params should have that lr, all others should be None
         if self.lr is None or isinstance(self.lr, float):
-            self.lr_dict = defaultdict(lambda: self.lr)
+            # self.lr_dict = defaultdict(lambda: self.lr)
+            self.lr_dict = defaultdict(partial(return_same, self.lr))
         else:
-            self.lr_dict = defaultdict(lambda: None)
+            # self.lr_dict = defaultdict(lambda: None)
+            self.lr_dict = defaultdict(partial(return_same, None))
             self.lr_dict.update(self.lr)
 
         # Same logic for weight decay
         # (but is always just set to 0.0 and hasn't been ablated)
         if self.wd is None or isinstance(self.wd, float):
-            self.wd_dict = defaultdict(lambda: self.wd)
+            # self.wd_dict = defaultdict(lambda: self.wd)
+            self.wd_dict = defaultdict(partial(return_same, self.wd))
         else:
-            self.wd_dict = defaultdict(lambda: None)
+            # self.lr_dict = defaultdict(lambda: None)
+            self.wd_dict = defaultdict(partial(return_same, None))
             self.wd_dict.update(self.wd)
 
     def forward(self, state=None, rate=1.0, L=None):

@@ -91,10 +91,6 @@ class EncoderS4Block(nn.Module):
                 ResidualS4Unit(dim // 2),
                 ResidualS4Unit(dim // 2),
                 Snake1d(dim // 2),
-                FFTConv(
-                    d_model=dim // 2, mode="diag", transposed=True, activation="id"
-                ),
-                Snake1d(dim // 2),
                 nn.ZeroPad1d((2 * stride - 1, 0)),
                 WNConv1d(
                     dim // 2,
@@ -115,7 +111,6 @@ class EncoderS4Block(nn.Module):
                 ),
                 Snake1d(dim // 2),
                 WNConv1d(dim // 2, dim, kernel_size=1),
-                nn.ZeroPad1d((stride - 1, 0)),
                 nn.AvgPool1d(kernel_size=stride, stride=stride),
             )
 
@@ -186,9 +181,11 @@ class EncoderS4(nn.Module):
             ]
 
         # Create EncoderBlocks that double channels as they downsample by `stride`
-        for stride in strides:
+        for i, stride in enumerate(strides):
             d_model *= 2
-            self.block += [EncoderS4Block(d_model, stride=stride)]
+            self.block += [
+                EncoderS4Block(d_model, stride=stride, keep_conv_end=keep_conv_init_end)
+            ]
 
         # Create last conv/s4
         if keep_conv_init_end:
@@ -394,7 +391,11 @@ class DecoderS4(nn.Module):
         for i, stride in enumerate(rates):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
-            layers += [DecoderS4Block(input_dim, output_dim, stride)]
+            layers += [
+                DecoderS4Block(
+                    input_dim, output_dim, stride, keep_conv_upsample=keep_conv_init_end
+                )
+            ]
 
         # Add final conv/s4
         if keep_conv_init_end:
@@ -483,6 +484,7 @@ class DAC(BaseModel, CodecMixin):
         causal_encoder: bool = False,
         causal_decoder: bool = False,
         use_s4: bool = False,
+        keep_conv_nonres: bool = True,
         sample_rate: int = 44100,
     ):
         super().__init__()
@@ -508,6 +510,7 @@ class DAC(BaseModel, CodecMixin):
                 encoder_dim,
                 encoder_rates,
                 latent_dim,
+                keep_conv_init_end=keep_conv_nonres,
             )
         else:
             self.encoder = Encoder(
@@ -530,6 +533,7 @@ class DAC(BaseModel, CodecMixin):
                 latent_dim,
                 decoder_dim,
                 decoder_rates,
+                keep_conv_init_end=keep_conv_nonres,
             )
         else:
             self.decoder = Decoder(

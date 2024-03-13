@@ -50,7 +50,12 @@ if __name__ == "__main__":
     dec_conv = Decoder(
         input_channel=d_latent, channels=dec_dim, rates=[8, 8, 4, 2], causal=True
     )
-    dec_s4 = DecoderS4(input_channel=d_latent, channels=dec_dim, rates=[8, 8, 4, 2])
+    dec_s4 = DecoderS4(
+        input_channel=d_latent,
+        channels=dec_dim,
+        rates=[8, 8, 4, 2],
+        keep_conv_init_end=False,
+    )
 
     print("[Full decoder]")
     print(
@@ -106,7 +111,7 @@ if __name__ == "__main__":
 
     # Full encoder
     enc_conv = Encoder(d_latent=1024, causal=True)
-    enc_s4 = EncoderS4(d_latent=1024, d_model=64)
+    enc_s4 = EncoderS4(d_latent=1024, d_model=64, keep_conv_init_end=False)
 
     print("[Full encoder]")
     print(
@@ -135,4 +140,11 @@ if __name__ == "__main__":
     model_s4 = DAC(
         encoder_dim=64,
         use_s4=True,
+    )
+
+    print("\nDAC w/ entirely S4 layers:")
+    model_s4 = DAC(
+        encoder_dim=64,
+        use_s4=True,
+        keep_conv_nonres=False,
     )
