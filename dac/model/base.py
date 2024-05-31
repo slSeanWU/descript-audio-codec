@@ -282,6 +282,9 @@ class CodecMixin:
             resample_fn = recons.ffmpeg_resample
             loudness_fn = recons.ffmpeg_loudness
 
+        if self.causal_decoder:
+            recons.audio_data = recons.audio_data[..., self.hop_length - 1 :]
+
         recons.normalize(obj.input_db)
         resample_fn(obj.sample_rate)
         recons = recons[..., : obj.original_length]
