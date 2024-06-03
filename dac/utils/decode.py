@@ -24,6 +24,7 @@ def decode(
     model_bitrate: str = "8kbps",
     device: str = "cuda",
     model_type: str = "44khz",
+    n_quantizers: int = None,
     verbose: bool = False,
 ):
     """Decode audio from codes.
@@ -73,7 +74,11 @@ def decode(
         artifact = DACFile.load(input_files[i])
 
         # Reconstruct audio from codes
-        recons = generator.decompress(artifact, verbose=verbose)
+        recons = generator.decompress(
+            artifact, verbose=verbose, n_quantizers=n_quantizers
+        )
+
+        assert recons.audio_data.size(-1) == artifact.original_length
 
         # Compute output path
         relative_path = input_files[i].relative_to(input)
