@@ -119,7 +119,13 @@ class EncoderS4Block(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, dim: int = 16, stride: int = 1, causal: bool = False):
+    def __init__(
+        self,
+        dim: int = 16,
+        stride: int = 1,
+        causal: bool = False,
+        dilation_mult: int = 3,
+    ):
         super().__init__()
         self.causal = causal
         # print("[encblock causal]", causal)
@@ -127,8 +133,8 @@ class EncoderBlock(nn.Module):
         if causal:
             self.block = nn.Sequential(
                 ResidualUnit(dim // 2, dilation=1, causal=True),
-                ResidualUnit(dim // 2, dilation=3, causal=True),
-                ResidualUnit(dim // 2, dilation=9, causal=True),
+                ResidualUnit(dim // 2, dilation=dilation_mult, causal=True),
+                ResidualUnit(dim // 2, dilation=dilation_mult**2, causal=True),
                 Snake1d(dim // 2),
                 nn.ZeroPad1d((2 * stride - 1, 0)),
                 WNConv1d(
@@ -142,8 +148,8 @@ class EncoderBlock(nn.Module):
         else:
             self.block = nn.Sequential(
                 ResidualUnit(dim // 2, dilation=1),
-                ResidualUnit(dim // 2, dilation=3),
-                ResidualUnit(dim // 2, dilation=9),
+                ResidualUnit(dim // 2, dilation=dilation_mult),
+                ResidualUnit(dim // 2, dilation=dilation_mult**2),
                 Snake1d(dim // 2),
                 WNConv1d(
                     dim // 2,
@@ -216,11 +222,22 @@ class Encoder(nn.Module):
         strides: list = [2, 4, 8, 8],
         d_latent: int = 64,
         causal: bool = False,
+        frame_indep: bool = False,
     ):
         super().__init__()
         self.causal = causal
-        # Create first convolution
+        self.hop_length = np.prod(strides)
+        self.frame_indep = frame_indep
 
+        print("[encoder causal]", self.causal)
+        print("[encoder frame indep]", self.frame_indep)
+
+        if causal and frame_indep:
+            raise ValueError(
+                "[DAC Encoder] please only set one of `causal` or `frame_indep` to True, not both"
+            )
+
+        # Create first convolution
         if causal:
             self.block = [
                 nn.ZeroPad1d((6, 0)),
@@ -230,9 +247,23 @@ class Encoder(nn.Module):
             self.block = [WNConv1d(1, d_model, kernel_size=7, padding=3)]
 
         # Create EncoderBlocks that double channels as they downsample by `stride`
+        _hoplen = self.hop_length
         for stride in strides:
             d_model *= 2
-            self.block += [EncoderBlock(d_model, stride=stride, causal=causal)]
+            if frame_indep and _hoplen < 64:
+                self.block += [
+                    EncoderBlock(d_model, stride=stride, causal=causal, dilation_mult=1)
+                ]
+            elif frame_indep and _hoplen < 256:
+                self.block += [
+                    EncoderBlock(d_model, stride=stride, causal=causal, dilation_mult=2)
+                ]
+            else:
+                self.block += [EncoderBlock(d_model, stride=stride, causal=causal)]
+
+            # print("[enc]", _hoplen, d_model)
+
+            _hoplen /= stride
 
         # Create last convolution
         if causal:
@@ -251,8 +282,19 @@ class Encoder(nn.Module):
         self.block = nn.Sequential(*self.block)
         self.enc_dim = d_model
 
-    def forward(self, x):
-        return self.block(x)
+    def forward(self, x: torch.Tensor):
+        if self.frame_indep:
+            x = x.squeeze(1)
+            bsize, n_frames = x.size(0), x.size(-1) // self.hop_length
+            x = x.reshape(bsize * n_frames, 1, self.hop_length).contiguous()
+            x = self.block(x)
+            assert x.size(-1) == 1
+            x = x.squeeze(-1)
+            x = x.reshape(bsize, n_frames, x.size(-1))
+            x = x.permute(0, 2, 1)
+            return x
+        else:
+            return self.block(x)
 
 
 class LinearUpsampleForS4(nn.Module):
@@ -324,6 +366,7 @@ class DecoderBlock(nn.Module):
         output_dim: int = 8,
         stride: int = 1,
         causal: bool = False,
+        dilation_mult: int = 3,
     ):
         super().__init__()
         self.causal = causal
@@ -340,8 +383,8 @@ class DecoderBlock(nn.Module):
                     padding=0,
                 ),
                 ResidualUnit(output_dim, dilation=1, causal=True),
-                ResidualUnit(output_dim, dilation=3, causal=True),
-                ResidualUnit(output_dim, dilation=9, causal=True),
+                ResidualUnit(output_dim, dilation=dilation_mult, causal=True),
+                ResidualUnit(output_dim, dilation=dilation_mult**2, causal=True),
             )
         else:
             self.block = nn.Sequential(
@@ -354,8 +397,8 @@ class DecoderBlock(nn.Module):
                     padding=math.ceil(stride / 2),
                 ),
                 ResidualUnit(output_dim, dilation=1),
-                ResidualUnit(output_dim, dilation=3),
-                ResidualUnit(output_dim, dilation=9),
+                ResidualUnit(output_dim, dilation=dilation_mult),
+                ResidualUnit(output_dim, dilation=dilation_mult**2),
             )
 
     def forward(self, x):
@@ -429,9 +472,20 @@ class Decoder(nn.Module):
         rates,
         d_out: int = 1,
         causal: bool = False,
+        frame_indep: bool = False,
     ):
         super().__init__()
         self.causal = causal
+        self.hop_length = np.prod(rates)
+        self.frame_indep = frame_indep
+
+        print("[decoder causal]", self.causal)
+        print("[decoder frame indep]", self.frame_indep)
+
+        if causal and frame_indep:
+            raise ValueError(
+                "[DAC Decoder] please only set one of `causal` or `frame_indep` to True, not both"
+            )
 
         # Add first conv layer
         if causal:
@@ -442,11 +496,44 @@ class Decoder(nn.Module):
         else:
             layers = [WNConv1d(input_channel, channels, kernel_size=7, padding=3)]
 
+        _hoplen = 1
         # Add upsampling + MRF blocks
         for i, stride in enumerate(rates):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
-            layers += [DecoderBlock(input_dim, output_dim, stride, causal=causal)]
+
+            # print("[dec]", _hoplen, output_dim)
+
+            if frame_indep and _hoplen < 64:
+                layers += [
+                    DecoderBlock(
+                        input_dim,
+                        output_dim,
+                        stride,
+                        causal=causal,
+                        dilation_mult=1,
+                    )
+                ]
+            elif frame_indep and _hoplen < 256:
+                layers += [
+                    DecoderBlock(
+                        input_dim,
+                        output_dim,
+                        stride,
+                        causal=causal,
+                        dilation_mult=2,
+                    )
+                ]
+            else:
+                layers += [
+                    DecoderBlock(
+                        input_dim,
+                        output_dim,
+                        stride,
+                        causal=causal,
+                    )
+                ]
+            _hoplen *= stride
 
         # Add final conv layer
         if causal:
@@ -466,7 +553,16 @@ class Decoder(nn.Module):
         self.model = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.model(x)
+        if self.frame_indep:
+            bsize, dim, n_frames = x.size(0), x.size(1), x.size(2)
+            x = x.permute(0, 2, 1)
+            x = x.reshape(bsize * n_frames, dim, 1)
+            x = self.model(x)
+            x = x.squeeze(1)
+            x = x.reshape(bsize, 1, n_frames * self.hop_length)
+            return x
+        else:
+            return self.model(x)
 
 
 class DAC(BaseModel, CodecMixin):
@@ -483,6 +579,8 @@ class DAC(BaseModel, CodecMixin):
         quantizer_dropout: bool = False,
         causal_encoder: bool = False,
         causal_decoder: bool = False,
+        frame_indep_encoder: bool = False,
+        frame_indep_decoder: bool = False,
         use_s4: bool = False,
         keep_conv_nonres: bool = True,
         sample_rate: int = 44100,
@@ -498,6 +596,8 @@ class DAC(BaseModel, CodecMixin):
         self.sample_rate = sample_rate
         self.causal_encoder = causal_encoder
         self.causal_decoder = causal_decoder
+        self.frame_indep_encoder = frame_indep_encoder
+        self.frame_indep_decoder = frame_indep_decoder
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -514,7 +614,11 @@ class DAC(BaseModel, CodecMixin):
             )
         else:
             self.encoder = Encoder(
-                encoder_dim, encoder_rates, latent_dim, causal=causal_encoder
+                encoder_dim,
+                encoder_rates,
+                latent_dim,
+                causal=causal_encoder,
+                frame_indep=frame_indep_encoder,
             )
 
         self.n_codebooks = n_codebooks
@@ -541,6 +645,7 @@ class DAC(BaseModel, CodecMixin):
                 decoder_dim,
                 decoder_rates,
                 causal=causal_decoder,
+                frame_indep=frame_indep_decoder,
             )
         self.sample_rate = sample_rate
         self.apply(init_weights)
