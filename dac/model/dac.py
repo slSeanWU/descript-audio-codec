@@ -581,6 +581,7 @@ class DAC(BaseModel, CodecMixin):
         causal_decoder: bool = False,
         frame_indep_encoder: bool = False,
         frame_indep_decoder: bool = False,
+        ignore_left_crop: bool = False,
         use_s4: bool = False,
         keep_conv_nonres: bool = True,
         sample_rate: int = 44100,
@@ -598,6 +599,8 @@ class DAC(BaseModel, CodecMixin):
         self.causal_decoder = causal_decoder
         self.frame_indep_encoder = frame_indep_encoder
         self.frame_indep_decoder = frame_indep_decoder
+        self.ignore_left_crop = ignore_left_crop
+        print("[ignore left crop]", self.ignore_left_crop)
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -783,7 +786,7 @@ class DAC(BaseModel, CodecMixin):
 
         x = self.decode(z)
 
-        if self.causal_decoder:
+        if self.causal_decoder and not self.ignore_left_crop:
             start_samp = self.hop_length - 1
             return {
                 "audio": x[..., start_samp : start_samp + length],

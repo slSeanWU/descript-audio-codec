@@ -336,16 +336,22 @@ class CodecMixin:
             resample_fn = recons.ffmpeg_resample
             loudness_fn = recons.ffmpeg_loudness
 
-        if self.causal_decoder:
+        if self.causal_decoder and not self.ignore_left_crop:
             recons.audio_data = recons.audio_data[..., self.hop_length - 1 :]
 
         recons.normalize(obj.input_db)
         resample_fn(obj.sample_rate)
         recons = recons[..., : obj.original_length]
         loudness_fn()
-        recons.audio_data = recons.audio_data.reshape(
-            -1, obj.channels, obj.original_length
-        )
+
+        if recons.audio_data.size(-1) == obj.original_length:
+            recons.audio_data = recons.audio_data.reshape(
+                -1, obj.channels, obj.original_length
+            )
+        else:
+            recons.audio_data = recons.audio_data.reshape(
+                -1, obj.channels, recons.audio_data.size(-1)
+            )
 
         self.padding = original_padding
         return recons
