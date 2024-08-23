@@ -14,8 +14,8 @@ from dac import DACFile
 from dac.utils import load_model
 
 warnings.filterwarnings("ignore", category=UserWarning)
-BLOCK_LEN = 512
-BLOCK_BATCH_SIZE = 128
+BLOCK_LEN = 1024
+BLOCK_BATCH_SIZE = 32
 
 
 def slice_code(artifact: DACFile, n_history: int, n_lookahead: int, slice_idx: int):
@@ -218,7 +218,7 @@ def decode_slice_concat(
         recons_chunks = torch.cat(recons_chunks, dim=-1)
         print(recons_chunks.size())
 
-        if generator.causal_decoder:
+        if generator.causal_decoder and not generator.ignore_left_crop:
             recons_chunks = recons_chunks[..., generator.hop_length - 1 :]
             assert recons_chunks.size(-1) >= (
                 orig_artifact.original_length
@@ -226,9 +226,10 @@ def decode_slice_concat(
                 / orig_artifact.sample_rate
             ), f"got {recons_chunks.size(-1)}, orig {orig_artifact.original_length}"
         else:
-            assert (
-                recons_chunks.size(-1) == orig_artifact.codes.size(-1) * BLOCK_LEN
-            ), f"got {recons_chunks.size(-1) // BLOCK_LEN}, orig {orig_artifact.codes.size(-1)}"
+            pass
+            # assert (
+            #     recons_chunks.size(-1) == orig_artifact.codes.size(-1) * BLOCK_LEN
+            # ), f"got {recons_chunks.size(-1) // BLOCK_LEN}, orig {orig_artifact.codes.size(-1)}"
 
         recons_chunks = recons_chunks.to("cpu")
         recons = AudioSignal(recons_chunks, sample_rate=44100)

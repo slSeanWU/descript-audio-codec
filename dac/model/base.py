@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -257,8 +258,15 @@ class CodecMixin:
     ):
         orig_device = block_codes.device
         block_codes = block_codes.to(self.device)
+
+        torch.cuda.synchronize()
+        st_time = time.time()
         z = self.quantizer.from_codes(block_codes)[0]
         r = self.decode(z)
+        print(
+            f"[chunk time] {(time.time() - st_time) * 1000:.2f} msec | bs = {z.size()}"
+        )
+        torch.cuda.synchronize()
         r = r.to(orig_device)
 
         return r
@@ -288,6 +296,7 @@ class CodecMixin:
         obj: Union[str, Path, DACFile],
         n_quantizers: int = None,
         verbose: bool = False,
+        force_ignore_left_crop: bool = False,
     ) -> AudioSignal:
         """Reconstruct audio from a given .dac file
 
@@ -321,8 +330,12 @@ class CodecMixin:
             # print("[code size]", c.size())
             if n_quantizers is not None:
                 c = c[:, :n_quantizers, :]
+            torch.cuda.synchronize()
+            st_time = time.time()
             z = self.quantizer.from_codes(c)[0]
             r = self.decode(z)
+            print(f"[chunk time] {(time.time() - st_time) * 1000:.2f} msec")
+            torch.cuda.synchronize()
             recons.append(r.to(original_device))
 
         recons = torch.cat(recons, dim=-1)
@@ -336,11 +349,15 @@ class CodecMixin:
             resample_fn = recons.ffmpeg_resample
             loudness_fn = recons.ffmpeg_loudness
 
-        if self.causal_decoder and not self.ignore_left_crop:
+        if (
+            self.causal_decoder
+            and not self.ignore_left_crop
+            and not force_ignore_left_crop
+        ):
             recons.audio_data = recons.audio_data[..., self.hop_length - 1 :]
 
-        recons.normalize(obj.input_db)
-        resample_fn(obj.sample_rate)
+        # recons.normalize(obj.input_db)
+        # resample_fn(obj.sample_rate)
         recons = recons[..., : obj.original_length]
         loudness_fn()
 

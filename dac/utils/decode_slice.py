@@ -12,17 +12,24 @@ from dac import DACFile
 from dac.utils import load_model
 
 warnings.filterwarnings("ignore", category=UserWarning)
-CODE_SLICES = np.linspace(300, 2300, 20, endpoint=False).astype(int)
-BLOCK_LEN = 512
+CODE_SLICES = np.linspace(30, 430, 20, endpoint=False).astype(int)
+BLOCK_LEN = 1024
 
 
-def slice_code(artifact: DACFile, n_history: int, n_lookahead: int, slice_idx: int):
-    if n_lookahead is None:
-        n_lookahead = artifact.chunk_length - slice_idx
-
-    artifact.codes = artifact.codes[
-        ..., slice_idx - n_history : slice_idx + n_lookahead + 1
-    ]
+def slice_code(
+    artifact: DACFile,
+    n_history: int,
+    n_lookahead: int,
+    slice_idx: int,
+    mask_current_code: bool = False,
+):
+    if mask_current_code:
+        assert n_lookahead == 0
+        artifact.codes = artifact.codes[..., slice_idx - n_history : slice_idx]
+    else:
+        artifact.codes = artifact.codes[
+            ..., slice_idx - n_history : slice_idx + n_lookahead + 1
+        ]
     artifact.chunk_length = n_lookahead + n_history + 1
     artifact.original_length = (n_lookahead + n_history + 1) * BLOCK_LEN
 
@@ -43,6 +50,9 @@ def decode_slice(
     n_lookahead: int = None,
     n_history: int = 20,
     verbose: bool = False,
+    force_ignore_left_crop: bool = False,
+    code_idx_plus_one: bool = False,
+    mask_current_code: bool = False,
 ):
     """Decode audio from codes.
 
@@ -88,12 +98,24 @@ def decode_slice(
 
     for i in tqdm(range(len(input_files)), desc=f"Decoding files"):
         for s in CODE_SLICES:
+            # Increment by one if specified
+            s_adjusted = s + 1 if code_idx_plus_one else s
             # Load file
             artifact = DACFile.load(input_files[i])
-            artifact = slice_code(artifact, n_history, n_lookahead, s)
+            artifact = slice_code(
+                artifact,
+                n_history,
+                n_lookahead,
+                s_adjusted,
+                mask_current_code=mask_current_code,
+            )
 
             # Reconstruct audio from codes
-            recons = generator.decompress(artifact, verbose=verbose)
+            recons = generator.decompress(
+                artifact,
+                verbose=verbose,
+                force_ignore_left_crop=force_ignore_left_crop,
+            )
 
             # Slice target block
             recons.audio_data = recons.audio_data[
@@ -110,7 +132,7 @@ def decode_slice(
                 output_dir = output
                 relative_path = input_files[i]
             output_name = relative_path.with_suffix(".wav").name
-            output_name = output_name.replace(".wav", f"_code{s:>04d}.wav")
+            output_name = output_name.replace(".wav", f"_code{s_adjusted:04d}.wav")
             output_path = output_dir / output_name
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
