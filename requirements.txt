@@ -9,3 +9,5 @@ tensorboard
 numba>=0.5.7
 jupyterlab
 frechet_audio_distance
+torchmetrics[audio]
+pesq
