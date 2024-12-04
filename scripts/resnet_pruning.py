@@ -213,7 +213,7 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
     return sparsities, all_mel_losses, all_stft_losses, all_waveform_losses
 
 def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
-    fig, axes = plt.subplots(3, int(math.ceil(len(mel_losses) / 3)),figsize=(15,24))
+    fig, axes = plt.subplots(int(math.ceil(len(mel_losses) / 3), 3),figsize=(15,24))
     five_pct_increase = 1.05 * original_mel_loss
     ten_pct_increase = 1.1 * original_mel_loss
     twenty_five_pct_increase = 1.25 * original_mel_loss
@@ -223,6 +223,7 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
     for idx, mel_loss in enumerate(mel_losses):
         ax = axes[idx]
         curve = ax.plot(sparsities, mel_loss)
+        line0 = ax.plot(sparsities, [original_mel_loss] * len(sparsities))
         line1 = ax.plot(sparsities, [five_pct_increase] * len(sparsities))
         line2 = ax.plot(sparsities, [ten_pct_increase] * len(sparsities))
         line3 = ax.plot(sparsities, [twenty_five_pct_increase] * len(sparsities))
@@ -234,10 +235,11 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
         ax.set_ylabel('mel loss')
         ax.legend([
             'mel loss after pruning',
-            '5pct increase of original model mel loss'
-            '10pct increase of original model mel loss'
-            '25pct increase of original model mel loss'
-            '50pct increase of original model mel loss'
+            'original mel loss',
+            '5pct increase of original model mel loss',
+            '10pct increase of original model mel loss',
+            '25pct increase of original model mel loss',
+            '50pct increase of original model mel loss',
             '100pct increase of original model mel loss'
         ])
         ax.grid(axis='x')
@@ -255,5 +257,5 @@ audio_file_path = "../samples"
 
 original_mel_loss, original_stft_loss, original_waveform_loss = eval(model, audio_file_path)
 
-sparsities, mel_losses, stft_losses, waveform_losses = sensitivity_scan(model_path, audio_file_path)
+sparsities, mel_losses, stft_losses, waveform_losses = sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0, scan_end=1.0)
 plot_sensitivity(sparsities=sparsities, mel_losses=mel_losses, original_mel_loss=original_mel_loss, save_path="resnet_sensitivity_scan.png")
