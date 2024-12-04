@@ -216,7 +216,7 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
     return sparsities, all_mel_losses, all_stft_losses, all_waveform_losses
 
 def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
-    fig, axes = plt.subplots(3, int(math.ceil(len(mel_losses) / 3)),figsize=(15,8))
+    fig, axes = plt.subplots(3, int(math.ceil(len(mel_losses) / 3)),figsize=(15,24))
     five_pct_increase = 1.05 * original_mel_loss
     ten_pct_increase = 1.1 * original_mel_loss
     twenty_five_pct_increase = 1.25 * original_mel_loss
