@@ -132,7 +132,7 @@ def channel_prune_model_resnet_only(model, prune_ratio):
 
 def eval(model, dataset_path):
     audio_files = util.find_audio(dataset_path)
-    print(audio_files)
+    # print(audio_files)
     waveform_loss = losses.L1Loss()
     stft_loss = losses.MultiScaleSTFTLoss()
     mel_loss = losses.MelSpectrogramLoss()
@@ -155,9 +155,6 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
 
     remove_wn(model.encoder.block)
     remove_wn(model.decoder.model)
-
-    signal = AudioSignal(audio_file_path)
-    x = signal.clone().resample(44100)
 
     waveform_loss = losses.L1Loss()
     stft_loss = losses.MultiScaleSTFTLoss()
@@ -197,7 +194,7 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
 
             next_snake.alpha = nn.Parameter(next_snake.alpha.data.detach()[:, :n_keep, :])
 
-            model_mel_loss, model_stft_loss, model_waveform_loss = eval(model, "../samples")
+            model_mel_loss, model_stft_loss, model_waveform_loss = eval(model, audio_file_path)
 
             mel_losses.append(model_mel_loss)
             stft_losses.append(model_stft_loss)
