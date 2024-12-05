@@ -138,7 +138,8 @@ def eval(model, dataset_path):
     mel_loss = losses.MelSpectrogramLoss()
     waveform_loss_sum = stft_loss_sum = mel_loss_sum = 0
     for audio_file in audio_files:
-        signal = AudioSignal(audio_file)
+        signal = AudioSignal(audio_file).cuda()
+        model = model.cuda()
         x = signal.clone().resample(44100)
         model_artifact = model.compress(signal, win_duration=12.0, verbose=False)
         model_recons = model.decompress(model_artifact, verbose=False)
@@ -151,10 +152,10 @@ def eval(model, dataset_path):
 @torch.no_grad()
 def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1, scan_end=1.0):
     model = dac.DAC.load(model_path)
-    apply_channel_sorting_resnet_only(model)
 
     remove_wn(model.encoder.block)
     remove_wn(model.decoder.model)
+    apply_channel_sorting_resnet_only(model)
 
     waveform_loss = losses.L1Loss()
     stft_loss = losses.MultiScaleSTFTLoss()
@@ -206,13 +207,15 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
             prev_conv.bias = nn.Parameter(prev_conv_bias_clone)
             next_snake.alpha = nn.Parameter(next_snake_alpha_clone.data)
 
+        print(mel_losses, stft_losses, waveform_losses)
+
         all_mel_losses.append(mel_loss)
         all_stft_losses.append(stft_loss)
         all_waveform_losses.append(waveform_loss)
 
     return sparsities, all_mel_losses, all_stft_losses, all_waveform_losses
 
-def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
+def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sensitity_scan.png"):
     fig, axes = plt.subplots(int(math.ceil(len(mel_losses) / 3), 3),figsize=(15,24))
     five_pct_increase = 1.05 * original_mel_loss
     ten_pct_increase = 1.1 * original_mel_loss
@@ -251,11 +254,12 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path=None):
 
 
 model_path = dac.utils.download(model_type="44khz")
-model = dac.DAC.load(model_path)
+model = dac.DAC.load(model_path).cuda()
 
 audio_file_path = "../samples"
 
 original_mel_loss, original_stft_loss, original_waveform_loss = eval(model, audio_file_path)
+print(original_mel_loss, original_stft_loss, original_waveform_loss)
 
 sparsities, mel_losses, stft_losses, waveform_losses = sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0, scan_end=1.0)
 plot_sensitivity(sparsities=sparsities, mel_losses=mel_losses, original_mel_loss=original_mel_loss, save_path="resnet_sensitivity_scan.png")
