@@ -223,6 +223,16 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sen
     fifty_pct_increase = 1.5 * original_mel_loss
     one_hundred_pct_increase = 2 * original_mel_loss
     axes = axes.ravel()
+
+    # array to record the last sparsity that is below each threshold
+    tgt_sparsities ={
+        '5pct': [sparsities[0]] * len(mel_losses),
+        '10pct': [sparsities[0]] * len(mel_losses),
+        '25pct': [sparsities[0]] * len(mel_losses),
+        '50pct': [sparsities[0]] * len(mel_losses),
+        '100pct': [sparsities[0]] * len(mel_losses),
+    }
+
     for idx, mel_loss in enumerate(mel_losses):
         ax = axes[idx]
         mel_loss = [m.item() for m in mel_loss]
@@ -233,6 +243,19 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sen
         line3 = ax.plot(sparsities, [twenty_five_pct_increase.item()] * len(sparsities))
         line4 = ax.plot(sparsities, [fifty_pct_increase.item()] * len(sparsities))
         line5 = ax.plot(sparsities, [one_hundred_pct_increase.item()] * len(sparsities))
+
+        for sp, sp_mel in zip(sparsities, mel_loss):
+            if sp_mel < five_pct_increase and tgt_sparsities['5pct'][idx] < sp:
+                tgt_sparsities['5pct'][idx] = round(sp, 2)
+            if sp_mel < ten_pct_increase and tgt_sparsities['10pct'][idx] < sp:
+                tgt_sparsities['10pct'][idx] = round(sp, 2)
+            if sp_mel < twenty_five_pct_increase and tgt_sparsities['25pct'][idx] < sp:
+                tgt_sparsities['25pct'][idx] = round(sp, 2)
+            if sp_mel < fifty_pct_increase and tgt_sparsities['50pct'][idx] < sp:
+                tgt_sparsities['50pct'][idx] = round(sp, 2)
+            if sp_mel < one_hundred_pct_increase and tgt_sparsities['100pct'][idx] < sp:
+                tgt_sparsities['100pct'][idx] = round(sp, 2)
+
         ax.set_xticks(np.arange(start=0.0, stop=1.0, step=0.1))
         ax.set_title(f"Residual Net {idx}")
         ax.set_xlabel('sparsity')
@@ -246,12 +269,16 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sen
             '50pct increase of original model mel loss',
             '100pct increase of original model mel loss'
         ])
+        ax.set_ylim(min(mel_loss) - 0.02, max(mel_loss) + 0.02)
         ax.grid(axis='x')
     fig.suptitle('Sensitivity Curves: Mel Loss vs. Pruning Sparsity')
     fig.tight_layout()
     if save_path:
         plt.savefig(save_path)
     plt.show()
+
+    for k, v in tgt_sparsities.items():
+        print(f"\nSparsities that is below {k} increase threshold: \n {v}")
 
 
 model_path = dac.utils.download(model_type="44khz")
