@@ -170,7 +170,8 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
     find_residual_nets(model.encoder.block, all_resnets)
     find_residual_nets(model.decoder.model, all_resnets)
     
-    for i_resnet, resnet in enumerate(all_resnets):
+    # for i_resnet, resnet in enumerate(all_resnets):
+    for i_resnet, resnet in enumerate(all_resnets[:3]):
         prev_snake, prev_conv, next_snake, next_conv = resnet.block
         prev_snake_alpha_clone, prev_conv_weight_clone, prev_conv_bias_clone, next_snake_alpha_clone, next_conv_weight_clone = prev_snake.alpha.detach().clone(), prev_conv.weight.detach().clone(), prev_conv.bias.detach().clone(), next_snake.alpha.detach().clone(), next_conv.weight.detach().clone()
         mel_losses = []
@@ -209,14 +210,14 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
 
         print(mel_losses, stft_losses, waveform_losses)
 
-        all_mel_losses.append(mel_loss)
-        all_stft_losses.append(stft_loss)
-        all_waveform_losses.append(waveform_loss)
+        all_mel_losses.append(mel_losses)
+        all_stft_losses.append(stft_losses)
+        all_waveform_losses.append(waveform_losses)
 
     return sparsities, all_mel_losses, all_stft_losses, all_waveform_losses
 
 def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sensitity_scan.png"):
-    fig, axes = plt.subplots(int(math.ceil(len(mel_losses) / 3), 3),figsize=(15,24))
+    fig, axes = plt.subplots(int(math.ceil(len(mel_losses) / 3)), 3, figsize=(15,24))
     five_pct_increase = 1.05 * original_mel_loss
     ten_pct_increase = 1.1 * original_mel_loss
     twenty_five_pct_increase = 1.25 * original_mel_loss
@@ -225,14 +226,15 @@ def plot_sensitivity(sparsities, mel_losses, original_mel_loss, save_path="./sen
     axes = axes.ravel()
     for idx, mel_loss in enumerate(mel_losses):
         ax = axes[idx]
+        mel_loss = [m.item() for m in mel_loss]
         curve = ax.plot(sparsities, mel_loss)
-        line0 = ax.plot(sparsities, [original_mel_loss] * len(sparsities))
-        line1 = ax.plot(sparsities, [five_pct_increase] * len(sparsities))
-        line2 = ax.plot(sparsities, [ten_pct_increase] * len(sparsities))
-        line3 = ax.plot(sparsities, [twenty_five_pct_increase] * len(sparsities))
-        line4 = ax.plot(sparsities, [fifty_pct_increase] * len(sparsities))
-        line5 = ax.plot(sparsities, [one_hundred_pct_increase] * len(sparsities))
-        ax.set_xticks(np.arange(start=0.1, stop=1.0, step=0.1))
+        line0 = ax.plot(sparsities, [original_mel_loss.item()] * len(sparsities))
+        line1 = ax.plot(sparsities, [five_pct_increase.item()] * len(sparsities))
+        line2 = ax.plot(sparsities, [ten_pct_increase.item()] * len(sparsities))
+        line3 = ax.plot(sparsities, [twenty_five_pct_increase.item()] * len(sparsities))
+        line4 = ax.plot(sparsities, [fifty_pct_increase.item()] * len(sparsities))
+        line5 = ax.plot(sparsities, [one_hundred_pct_increase.item()] * len(sparsities))
+        ax.set_xticks(np.arange(start=0.0, stop=1.0, step=0.1))
         ax.set_title(f"Residual Net {idx}")
         ax.set_xlabel('sparsity')
         ax.set_ylabel('mel loss')
