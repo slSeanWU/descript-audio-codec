@@ -21,7 +21,7 @@ def check_correspondence(audio_files_input, audio_files_output):
     for input_file, output_file in zip(audio_files_input, audio_files_output):
         if (
             not os.path.splitext(os.path.basename(input_file))[0]
-            == os.path.splitext(os.path.basename(output_file))[0]
+            == os.path.splitext(os.path.basename(output_file))[0].replace("_recons", "")
         ):
             return False
 
