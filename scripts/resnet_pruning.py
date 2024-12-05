@@ -170,8 +170,7 @@ def sensitivity_scan(model_path, audio_file_path, scan_step=0.1, scan_start=0.1,
     find_residual_nets(model.encoder.block, all_resnets)
     find_residual_nets(model.decoder.model, all_resnets)
     
-    # for i_resnet, resnet in enumerate(all_resnets):
-    for i_resnet, resnet in enumerate(all_resnets[:3]):
+    for i_resnet, resnet in enumerate(all_resnets):
         prev_snake, prev_conv, next_snake, next_conv = resnet.block
         prev_snake_alpha_clone, prev_conv_weight_clone, prev_conv_bias_clone, next_snake_alpha_clone, next_conv_weight_clone = prev_snake.alpha.detach().clone(), prev_conv.weight.detach().clone(), prev_conv.bias.detach().clone(), next_snake.alpha.detach().clone(), next_conv.weight.detach().clone()
         mel_losses = []
