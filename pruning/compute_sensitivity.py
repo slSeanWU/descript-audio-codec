@@ -71,7 +71,7 @@ model_path = 'models/weights_44khz_8kbps_0.0.1.pth'
 model = load_pruning_model(model_path, device)
 
 # 
-input_signal_files = glob.glob('/autofs/cluster/dalcalab2/users/hoopes/tinyml/data/processed/val/*/*')
+input_signal_files = glob.glob('data/calibration/*/*')
 signals = [load_signal(f, model.sample_rate, device) for f in input_signal_files]
 
 # 
