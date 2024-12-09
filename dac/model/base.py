@@ -105,6 +105,24 @@ class CodecMixin:
 
         return (l_in - l_out) // 2
 
+    def get_encoder_delay(self):
+        delay = 0
+        layers = []
+
+        for layer in self.encoder.modules():
+            if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
+                layers.append(layer)
+
+        step_size = 1
+        for layer in layers:
+            d = layer.dilation[0]
+            k = layer.kernel_size[0]
+            s = layer.stride[0]
+            delay += step_size * ((d * (k - 1)) / 2)
+            step_size *= s
+
+        return delay
+
     def get_output_length(self, input_length):
         L = input_length
         # Calculate output length
@@ -233,9 +251,42 @@ class CodecMixin:
         return dac_file
 
     @torch.no_grad()
+    def batch_block_decompress(
+        self,
+        block_codes: torch.Tensor,
+    ):
+        orig_device = block_codes.device
+        block_codes = block_codes.to(self.device)
+        z = self.quantizer.from_codes(block_codes)[0]
+        r = self.decode(z)
+        r = r.to(orig_device)
+
+        return r
+
+    @torch.no_grad()
+    def normalize_only(
+        self,
+        signal: AudioSignal,
+        ref_dac_obj: DACFile,
+    ):
+        resample_fn = signal.resample
+        loudness_fn = signal.loudness
+
+        signal.normalize(ref_dac_obj.input_db)
+        resample_fn(ref_dac_obj.sample_rate)
+        signal = signal[..., : ref_dac_obj.original_length]
+        loudness_fn()
+        signal.audio_data = signal.audio_data.reshape(
+            -1, ref_dac_obj.channels, ref_dac_obj.original_length
+        )
+
+        return signal
+
+    @torch.no_grad()
     def decompress(
         self,
         obj: Union[str, Path, DACFile],
+        n_quantizers: int = None,
         verbose: bool = False,
     ) -> AudioSignal:
         """Reconstruct audio from a given .dac file
@@ -267,6 +318,9 @@ class CodecMixin:
 
         for i in range_fn(0, codes.shape[-1], chunk_length):
             c = codes[..., i : i + chunk_length].to(self.device)
+            # print("[code size]", c.size())
+            if n_quantizers is not None:
+                c = c[:, :n_quantizers, :]
             z = self.quantizer.from_codes(c)[0]
             r = self.decode(z)
             recons.append(r.to(original_device))
@@ -282,13 +336,22 @@ class CodecMixin:
             resample_fn = recons.ffmpeg_resample
             loudness_fn = recons.ffmpeg_loudness
 
+        if self.causal_decoder and not self.ignore_left_crop:
+            recons.audio_data = recons.audio_data[..., self.hop_length - 1 :]
+
         recons.normalize(obj.input_db)
         resample_fn(obj.sample_rate)
         recons = recons[..., : obj.original_length]
         loudness_fn()
-        recons.audio_data = recons.audio_data.reshape(
-            -1, obj.channels, obj.original_length
-        )
+
+        if recons.audio_data.size(-1) == obj.original_length:
+            recons.audio_data = recons.audio_data.reshape(
+                -1, obj.channels, obj.original_length
+            )
+        else:
+            recons.audio_data = recons.audio_data.reshape(
+                -1, obj.channels, recons.audio_data.size(-1)
+            )
 
         self.padding = original_padding
         return recons
