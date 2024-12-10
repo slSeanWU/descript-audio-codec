@@ -17,6 +17,19 @@ neural audio codec, introduced in the paper titled **High-Fidelity Audio Compres
 <p align="center">
 <img src="./assets/comparsion_stats.png" alt="Comparison of compressions approaches. Our model achieves a higher compression factor compared to all baseline methods. Our model has a ~90x compression factor compared to 32x compression factor of EnCodec and 64x of SoundStream. Note that we operate at a target bitrate of 8 kbps, whereas EnCodec operates at 24 kbps and SoundStream at 6 kbps. We also operate at 44.1 kHz, whereas EnCodec operates at 48 kHz and SoundStream operates at 24 kHz." width=35%></p>
 
+## TinyML F24
+
+`samples` directory contains 10 enviromental, music, and speech audio files. Used for initial testing purposes.
+
+`scripts` directory
+- `evaluate_fad.py`: code for FAD evaluation metric.
+- `evaluate_pesq.py`: code for PESQ evaluation metric.
+- `prune_and_profile.py`: standalone script for evaluating pruned models for efficiency and performance.
+- `pruning.ipynb`: exploration of channel wising pruning of the DAC model.
+- `quantization.ipynb`: exploration of quantization of the DAC model.
+- `resnet_pruning.py`: standalone script for pruning conv channels in each resnet independently + sensitivity analysis of each Resnet.
+
+`pruning` directory features a better way to handle Resnets than explored in `scripts`. Instead of treating each resnet independently, which caused a lot of layers to not be pruned, we keep track of channels that are pruned and pad the results with 0's to preserve output dimensions and order.
 
 ## Usage
 
