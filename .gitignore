@@ -1,3 +1,6 @@
+# Audio files
+*.dac 
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -142,7 +145,6 @@ notebooks/*.mp4
 *runs/
 boards/
 samples/
-*.ipynb
 
 results.json
 metrics.csv

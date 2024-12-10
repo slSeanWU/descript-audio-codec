@@ -35,8 +35,8 @@ def get_metrics(signal_path, recons_path, state):
                 f"stft-{k}": state.stft_loss(x, y),
                 f"waveform-{k}": state.waveform_loss(x, y),
                 f"sisdr-{k}": state.sisdr_loss(x, y),
-                f"visqol-audio-{k}": metrics.quality.visqol(x, y),
-                f"visqol-speech-{k}": metrics.quality.visqol(x, y, "speech"),
+                # f"visqol-audio-{k}": metrics.quality.visqol(x, y),
+                # f"visqol-speech-{k}": metrics.quality.visqol(x, y, "speech"),
             }
         )
     output["path"] = signal.path_to_file
@@ -49,9 +49,10 @@ def get_metrics(signal_path, recons_path, state):
 def evaluate(
     input: str = "samples/input",
     output: str = "samples/output",
-    n_proc: int = 50,
+    n_proc: int = 16,
 ):
     tracker = Tracker()
+    print("[eval dir]", output)
 
     waveform_loss = losses.L1Loss()
     stft_loss = losses.MultiScaleSTFTLoss()
@@ -85,7 +86,16 @@ def evaluate(
             with ProcessPoolExecutor(n_proc, mp.get_context("fork")) as pool:
                 for i in range(len(audio_files)):
                     future = pool.submit(
-                        get_metrics, audio_files[i], output / audio_files[i].name, state
+                        # get_metrics,
+                        # audio_files[i],
+                        # output / audio_files[i].name,
+                        # state,
+                        get_metrics,
+                        audio_files[i],
+                        output
+                        / "/".join(str(audio_files[i]).split("/")[-3:-1])
+                        / audio_files[i].name.replace(".flac", ".wav"),
+                        state,
                     )
                     futures.append(future)
 

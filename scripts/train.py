@@ -130,6 +130,8 @@ def load(
     resume: bool = False,
     tag: str = "latest",
     load_weights: bool = False,
+    freeze_encoder: bool = False,
+    freeze_quantizer: bool = False,
 ):
     generator, g_extra = None, {}
     discriminator, d_extra = None, {}
@@ -148,6 +150,16 @@ def load(
 
     generator = DAC() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
+
+    if freeze_encoder:
+        print("[info] freezing DAC encoder")
+        for p in generator.encoder.parameters():
+            p.requires_grad_(False)
+
+    if freeze_quantizer:
+        print("[info] freezing DAC quantizer")
+        for p in generator.quantizer.parameters():
+            p.requires_grad_(False)
 
     tracker.print(generator)
     tracker.print(discriminator)

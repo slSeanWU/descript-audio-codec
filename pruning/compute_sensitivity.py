@@ -76,7 +76,6 @@ signals = [load_signal(f, model.sample_rate, device) for f in input_signal_files
 
 # 
 ratios = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
-signals = signals[::10]
 
 metrics = {','.join(group_names): [] for group_names in pruning_layer_groups}
 
