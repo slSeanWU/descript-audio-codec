@@ -17,6 +17,25 @@ neural audio codec, introduced in the paper titled **High-Fidelity Audio Compres
 <p align="center">
 <img src="./assets/comparsion_stats.png" alt="Comparison of compressions approaches. Our model achieves a higher compression factor compared to all baseline methods. Our model has a ~90x compression factor compared to 32x compression factor of EnCodec and 64x of SoundStream. Note that we operate at a target bitrate of 8 kbps, whereas EnCodec operates at 24 kbps and SoundStream at 6 kbps. We also operate at 44.1 kHz, whereas EnCodec operates at 48 kHz and SoundStream operates at 24 kHz." width=35%></p>
 
+## Options for Frame-wise and/or Casual DAC Encoder and Decoder
+
+To use the **framewise encoder + causal decoder** setting primarily explored in the following paper:
+
+- Wu et al.  
+  "**Towards Codec-LM Co-design for Neural Codec Language Models**"  
+  NAACL Student Research Workshop (NAACL-SRW) 2025   
+
+please refer to the config file
+```
+conf/final/44khz-encframe-deccausal.yml
+```
+
+The differences from the original default setting (i.e., `conf/final/44khz.yml`) are the following additions
+```
+DAC.frame_indep_encoder: true
+DAC.causal_decoder: true
+DAC.ignore_left_crop: true
+```
 
 ## Usage
 
