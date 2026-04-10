@@ -43,28 +43,55 @@ class ResidualS4Unit(nn.Module):
 
 
 class ResidualUnit(nn.Module):
-    def __init__(self, dim: int = 16, dilation: int = 1, causal: bool = False):
+
+    def __init__(
+        self,
+        dim: int = 16,
+        dilation: int = 1,
+        causal: bool = False,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
+    ):
         super().__init__()
         self.causal = causal
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
         # print("[resunit causal]", causal)
+
+        layers = [Snake1d(dim)]
 
         if causal:
             pad = (7 - 1) * dilation
-            self.block = nn.Sequential(
-                Snake1d(dim),
-                nn.ZeroPad1d((pad, 0)),
-                WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=0),
-                Snake1d(dim),
-                WNConv1d(dim, dim, kernel_size=1),
-            )
+            layers += [nn.ZeroPad1d((pad, 0))]
         else:
             pad = ((7 - 1) * dilation) // 2
-            self.block = nn.Sequential(
-                Snake1d(dim),
-                WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
-                Snake1d(dim),
-                WNConv1d(dim, dim, kernel_size=1),
-            )
+
+        if depthwise_expansion_factor > 1:
+            layers += [
+                WNConv1d(
+                    dim,
+                    dim * depthwise_expansion_factor,
+                    kernel_size=1,
+                ),
+                Snake1d(dim * depthwise_expansion_factor),
+            ]
+
+        layers += [
+            WNConv1d(
+                dim * depthwise_expansion_factor,
+                dim * depthwise_expansion_factor,
+                kernel_size=7,
+                dilation=dilation,
+                padding=0 if causal else pad,
+                groups=(
+                    dim * depthwise_expansion_factor if use_depth_separable_conv else 1
+                ),
+            ),
+            Snake1d(dim * depthwise_expansion_factor),
+            WNConv1d(dim * depthwise_expansion_factor, dim, kernel_size=1),
+        ]
+
+        self.block = nn.Sequential(*layers)
 
     def forward(self, x):
         y = self.block(x)
@@ -119,46 +146,61 @@ class EncoderS4Block(nn.Module):
 
 
 class EncoderBlock(nn.Module):
+
     def __init__(
         self,
         dim: int = 16,
         stride: int = 1,
         causal: bool = False,
         dilation_mult: int = 3,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
     ):
         super().__init__()
         self.causal = causal
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
         # print("[encblock causal]", causal)
 
+        layers = [
+            ResidualUnit(
+                dim // 2,
+                dilation=1,
+                causal=causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+            ResidualUnit(
+                dim // 2,
+                dilation=dilation_mult,
+                causal=causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+            ResidualUnit(
+                dim // 2,
+                dilation=dilation_mult**2,
+                causal=causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+            Snake1d(dim // 2),
+        ]
+
         if causal:
-            self.block = nn.Sequential(
-                ResidualUnit(dim // 2, dilation=1, causal=True),
-                ResidualUnit(dim // 2, dilation=dilation_mult, causal=True),
-                ResidualUnit(dim // 2, dilation=dilation_mult**2, causal=True),
-                Snake1d(dim // 2),
-                nn.ZeroPad1d((2 * stride - 1, 0)),
-                WNConv1d(
-                    dim // 2,
-                    dim,
-                    kernel_size=2 * stride,
-                    stride=stride,
-                    padding=0,
-                ),
-            )
-        else:
-            self.block = nn.Sequential(
-                ResidualUnit(dim // 2, dilation=1),
-                ResidualUnit(dim // 2, dilation=dilation_mult),
-                ResidualUnit(dim // 2, dilation=dilation_mult**2),
-                Snake1d(dim // 2),
-                WNConv1d(
-                    dim // 2,
-                    dim,
-                    kernel_size=2 * stride,
-                    stride=stride,
-                    padding=math.ceil(stride / 2),
-                ),
-            )
+            layers += [nn.ZeroPad1d((2 * stride - 1, 0))]
+
+        layers += [
+            WNConv1d(
+                dim // 2,
+                dim,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=0 if causal else math.ceil(stride / 2),
+            ),
+        ]
+
+        self.block = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.block(x)
@@ -216,6 +258,7 @@ class EncoderS4(nn.Module):
 
 
 class Encoder(nn.Module):
+
     def __init__(
         self,
         d_model: int = 64,
@@ -223,12 +266,15 @@ class Encoder(nn.Module):
         d_latent: int = 64,
         causal: bool = False,
         frame_indep: bool = False,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
     ):
         super().__init__()
         self.causal = causal
         self.hop_length = np.prod(strides)
         self.frame_indep = frame_indep
-
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
         print("[encoder causal]", self.causal)
         print("[encoder frame indep]", self.frame_indep)
 
@@ -250,32 +296,68 @@ class Encoder(nn.Module):
         _hoplen = self.hop_length
         for stride in strides:
             d_model *= 2
-            if frame_indep and _hoplen < 64:
-                self.block += [
-                    EncoderBlock(d_model, stride=stride, causal=causal, dilation_mult=1)
-                ]
-            elif frame_indep and _hoplen < 256:
-                self.block += [
-                    EncoderBlock(d_model, stride=stride, causal=causal, dilation_mult=2)
-                ]
-            else:
-                self.block += [EncoderBlock(d_model, stride=stride, causal=causal)]
 
-            # print("[enc]", _hoplen, d_model)
+            if frame_indep:
+                if _hoplen < 64:
+                    dilation_mult = 1
+                elif _hoplen < 256:
+                    dilation_mult = 2
+                else:
+                    dilation_mult = 3
+            else:
+                dilation_mult = 3
+
+            self.block += [
+                EncoderBlock(
+                    d_model,
+                    stride=stride,
+                    causal=causal,
+                    dilation_mult=dilation_mult,
+                    use_depth_separable_conv=self.use_depth_separable_conv,
+                    depthwise_expansion_factor=self.depthwise_expansion_factor,
+                )
+            ]
 
             _hoplen /= stride
 
         # Create last convolution
-        if causal:
+        self.block += [Snake1d(d_model)]
+
+        if self.causal:
+            self.block += [nn.ZeroPad1d((2, 0))]
+
+        if self.use_depth_separable_conv:
+            if self.depthwise_expansion_factor > 1:
+                self.block += [
+                    WNConv1d(
+                        d_model,
+                        d_model * self.depthwise_expansion_factor,
+                        kernel_size=1,
+                    ),
+                    Snake1d(d_model * self.depthwise_expansion_factor),
+                ]
+
             self.block += [
-                Snake1d(d_model),
-                nn.ZeroPad1d((2, 0)),
-                WNConv1d(d_model, d_latent, kernel_size=3, padding=0),
+                WNConv1d(
+                    d_model * self.depthwise_expansion_factor,
+                    d_model * self.depthwise_expansion_factor,
+                    kernel_size=3,
+                    padding=0 if self.causal else 1,
+                    groups=d_model * self.depthwise_expansion_factor,
+                ),
+                Snake1d(d_model * self.depthwise_expansion_factor),
+                WNConv1d(
+                    d_model * self.depthwise_expansion_factor, d_latent, kernel_size=1
+                ),
             ]
         else:
             self.block += [
-                Snake1d(d_model),
-                WNConv1d(d_model, d_latent, kernel_size=3, padding=1),
+                WNConv1d(
+                    d_model,
+                    d_latent,
+                    kernel_size=3,
+                    padding=1 if not self.causal else 0,
+                )
             ]
 
         # Wrap black into nn.Sequential
@@ -360,6 +442,7 @@ class DecoderS4Block(nn.Module):
 
 
 class DecoderBlock(nn.Module):
+
     def __init__(
         self,
         input_dim: int = 16,
@@ -367,39 +450,46 @@ class DecoderBlock(nn.Module):
         stride: int = 1,
         causal: bool = False,
         dilation_mult: int = 3,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
     ):
         super().__init__()
         self.causal = causal
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
         # print("[decblock causal]", causal)
 
-        if causal:
-            self.block = nn.Sequential(
-                Snake1d(input_dim),
-                WNConvTranspose1d(
-                    input_dim,
-                    output_dim,
-                    kernel_size=2 * stride,
-                    stride=stride,
-                    padding=0,
-                ),
-                ResidualUnit(output_dim, dilation=1, causal=True),
-                ResidualUnit(output_dim, dilation=dilation_mult, causal=True),
-                ResidualUnit(output_dim, dilation=dilation_mult**2, causal=True),
-            )
-        else:
-            self.block = nn.Sequential(
-                Snake1d(input_dim),
-                WNConvTranspose1d(
-                    input_dim,
-                    output_dim,
-                    kernel_size=2 * stride,
-                    stride=stride,
-                    padding=math.ceil(stride / 2),
-                ),
-                ResidualUnit(output_dim, dilation=1),
-                ResidualUnit(output_dim, dilation=dilation_mult),
-                ResidualUnit(output_dim, dilation=dilation_mult**2),
-            )
+        self.block = nn.Sequential(
+            Snake1d(input_dim),
+            WNConvTranspose1d(
+                input_dim,
+                output_dim,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=math.ceil(stride / 2) if not self.causal else 0,
+            ),
+            ResidualUnit(
+                output_dim,
+                dilation=1,
+                causal=self.causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+            ResidualUnit(
+                output_dim,
+                dilation=dilation_mult,
+                causal=self.causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+            ResidualUnit(
+                output_dim,
+                dilation=dilation_mult**2,
+                causal=self.causal,
+                use_depth_separable_conv=self.use_depth_separable_conv,
+                depthwise_expansion_factor=self.depthwise_expansion_factor,
+            ),
+        )
 
     def forward(self, x):
         return self.block(x)
@@ -465,6 +555,7 @@ class DecoderS4(nn.Module):
 
 
 class Decoder(nn.Module):
+
     def __init__(
         self,
         input_channel,
@@ -473,11 +564,17 @@ class Decoder(nn.Module):
         d_out: int = 1,
         causal: bool = False,
         frame_indep: bool = False,
+        use_final_tanh: bool = True,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
     ):
         super().__init__()
         self.causal = causal
         self.hop_length = np.prod(rates)
         self.frame_indep = frame_indep
+        self.use_final_tanh = use_final_tanh
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
 
         print("[decoder causal]", self.causal)
         print("[decoder frame indep]", self.frame_indep)
@@ -488,13 +585,46 @@ class Decoder(nn.Module):
             )
 
         # Add first conv layer
-        if causal:
-            layers = [
-                nn.ZeroPad1d((6, 0)),
-                WNConv1d(input_channel, channels, kernel_size=7, padding=0),
+        layers = []
+
+        if self.causal:
+            layers += [nn.ZeroPad1d((6, 0))]
+
+        if self.use_depth_separable_conv:
+            if self.depthwise_expansion_factor > 1:
+                layers += [
+                    WNConv1d(
+                        input_channel,
+                        input_channel * self.depthwise_expansion_factor,
+                        kernel_size=1,
+                    ),
+                    Snake1d(input_channel * self.depthwise_expansion_factor),
+                ]
+
+            layers += [
+                WNConv1d(
+                    input_channel * self.depthwise_expansion_factor,
+                    input_channel * self.depthwise_expansion_factor,
+                    kernel_size=7,
+                    padding=0 if self.causal else 3,
+                    groups=input_channel * self.depthwise_expansion_factor,
+                ),
+                Snake1d(input_channel * self.depthwise_expansion_factor),
+                WNConv1d(
+                    input_channel * self.depthwise_expansion_factor,
+                    channels,
+                    kernel_size=1,
+                ),
             ]
         else:
-            layers = [WNConv1d(input_channel, channels, kernel_size=7, padding=3)]
+            layers += [
+                WNConv1d(
+                    input_channel,
+                    channels,
+                    kernel_size=7,
+                    padding=0 if self.causal else 3,
+                ),
+            ]
 
         _hoplen = 1
         # Add upsampling + MRF blocks
@@ -502,37 +632,27 @@ class Decoder(nn.Module):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
 
-            # print("[dec]", _hoplen, output_dim)
-
-            if frame_indep and _hoplen < 64:
-                layers += [
-                    DecoderBlock(
-                        input_dim,
-                        output_dim,
-                        stride,
-                        causal=causal,
-                        dilation_mult=1,
-                    )
-                ]
-            elif frame_indep and _hoplen < 256:
-                layers += [
-                    DecoderBlock(
-                        input_dim,
-                        output_dim,
-                        stride,
-                        causal=causal,
-                        dilation_mult=2,
-                    )
-                ]
+            if frame_indep:
+                if _hoplen < 64:
+                    dilation_mult = 1
+                elif _hoplen < 256:
+                    dilation_mult = 2
+                else:
+                    dilation_mult = 3
             else:
-                layers += [
-                    DecoderBlock(
-                        input_dim,
-                        output_dim,
-                        stride,
-                        causal=causal,
-                    )
-                ]
+                dilation_mult = 3
+
+            layers += [
+                DecoderBlock(
+                    input_dim,
+                    output_dim,
+                    stride,
+                    causal=causal,
+                    dilation_mult=dilation_mult,
+                    use_depth_separable_conv=use_depth_separable_conv,
+                    depthwise_expansion_factor=depthwise_expansion_factor,
+                ),
+            ]
             _hoplen *= stride
 
         # Add final conv layer
@@ -541,13 +661,13 @@ class Decoder(nn.Module):
                 Snake1d(output_dim),
                 nn.ZeroPad1d((6, 0)),
                 WNConv1d(output_dim, d_out, kernel_size=7, padding=0),
-                nn.Tanh(),
+                nn.Tanh() if self.use_final_tanh else nn.Identity(),
             ]
         else:
             layers += [
                 Snake1d(output_dim),
                 WNConv1d(output_dim, d_out, kernel_size=7, padding=3),
-                nn.Tanh(),
+                nn.Tanh() if self.use_final_tanh else nn.Identity(),
             ]
 
         self.model = nn.Sequential(*layers)
@@ -566,6 +686,7 @@ class Decoder(nn.Module):
 
 
 class DAC(BaseModel, CodecMixin):
+
     def __init__(
         self,
         encoder_dim: int = 64,
@@ -585,6 +706,9 @@ class DAC(BaseModel, CodecMixin):
         use_s4: bool = False,
         keep_conv_nonres: bool = True,
         sample_rate: int = 44100,
+        use_final_tanh: bool = True,
+        use_depth_separable_conv: bool = False,
+        depthwise_expansion_factor: int = 1,
     ):
         super().__init__()
         print("[codebook size]", codebook_size)
@@ -600,6 +724,9 @@ class DAC(BaseModel, CodecMixin):
         self.frame_indep_encoder = frame_indep_encoder
         self.frame_indep_decoder = frame_indep_decoder
         self.ignore_left_crop = ignore_left_crop
+        self.use_final_tanh = use_final_tanh
+        self.use_depth_separable_conv = use_depth_separable_conv
+        self.depthwise_expansion_factor = depthwise_expansion_factor
         print("[ignore left crop]", self.ignore_left_crop)
 
         if latent_dim is None:
@@ -622,6 +749,8 @@ class DAC(BaseModel, CodecMixin):
                 latent_dim,
                 causal=causal_encoder,
                 frame_indep=frame_indep_encoder,
+                use_depth_separable_conv=use_depth_separable_conv,
+                depthwise_expansion_factor=depthwise_expansion_factor,
             )
 
         self.n_codebooks = n_codebooks
@@ -649,6 +778,9 @@ class DAC(BaseModel, CodecMixin):
                 decoder_rates,
                 causal=causal_decoder,
                 frame_indep=frame_indep_decoder,
+                use_final_tanh=use_final_tanh,
+                use_depth_separable_conv=use_depth_separable_conv,
+                depthwise_expansion_factor=depthwise_expansion_factor,
             )
         self.sample_rate = sample_rate
         self.apply(init_weights)

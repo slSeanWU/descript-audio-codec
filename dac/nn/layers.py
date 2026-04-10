@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from torch.nn.utils import weight_norm
+from torch.amp import custom_fwd
 
 
 def WNConv1d(*args, **kwargs):
@@ -29,5 +30,6 @@ class Snake1d(nn.Module):
         super().__init__()
         self.alpha = nn.Parameter(torch.ones(1, channels, 1))
 
+    @custom_fwd(cast_inputs=torch.float32, device_type="cuda")
     def forward(self, x):
-        return snake(x, self.alpha)
+        return snake(x, self.alpha.float())
