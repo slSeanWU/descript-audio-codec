@@ -339,10 +339,15 @@ class CodecMixin:
         if self.causal_decoder and not self.ignore_left_crop:
             recons.audio_data = recons.audio_data[..., self.hop_length - 1 :]
 
+        # return to fp32
+        recons.audio_data = recons.audio_data.to(torch.float32)
+
         recons.normalize(obj.input_db)
         resample_fn(obj.sample_rate)
         recons = recons[..., : obj.original_length]
         loudness_fn()
+
+        recons.ensure_max_of_audio()
 
         if recons.audio_data.size(-1) == obj.original_length:
             recons.audio_data = recons.audio_data.reshape(

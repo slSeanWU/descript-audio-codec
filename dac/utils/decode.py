@@ -1,3 +1,4 @@
+import subprocess
 import warnings
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from dac import DACFile
 from dac.utils import load_model
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# MP3 export: 192kbps mono, LAME codec
+MP3_BITRATE = "192k"
+MP3_PARAMS = ["-ac", "1", "-acodec", "libmp3lame"]
 
 
 @argbind.bind(group="decode", positional=True, without_prefix=True)
@@ -26,6 +31,8 @@ def decode(
     model_type: str = "44khz",
     n_quantizers: int = None,
     verbose: bool = False,
+    fp16: bool = False,
+    output_mp3: bool = False,
 ):
     """Decode audio from codes.
 
@@ -48,13 +55,16 @@ def decode(
     model_type : str, optional
         The type of model to use. Must be one of "44khz", "24khz", or "16khz". Defaults to "44khz". Ignored if `weights_path` is specified.
     """
+    if fp16:
+        print("[info] decoding in fp16")
+
     generator = load_model(
         model_type=model_type,
         model_bitrate=model_bitrate,
         tag=model_tag,
         load_path=weights_path,
     )
-    generator.to(device)
+    generator.to(device, dtype=torch.float16 if fp16 else torch.float32)
     generator.eval()
 
     # Find all .dac files in input directory
@@ -73,10 +83,13 @@ def decode(
         # Load file
         artifact = DACFile.load(input_files[i])
 
-        # Reconstruct audio from codes
-        recons = generator.decompress(
-            artifact, verbose=verbose, n_quantizers=n_quantizers
-        )
+        with torch.amp.autocast(
+            device_type=device, dtype=torch.float16 if fp16 else torch.float32
+        ):
+            # Reconstruct audio from codes
+            recons = generator.decompress(
+                artifact, verbose=verbose, n_quantizers=n_quantizers
+            )
 
         assert recons.audio_data.size(-1) == artifact.original_length
 
@@ -90,8 +103,34 @@ def decode(
         output_path = output_dir / output_name
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # back to fp32
+        recons.audio_data = recons.audio_data.to(torch.float32)
+
         # Write to file
-        recons.write(output_path)
+        if not output_mp3:
+            recons.write(output_path)
+        else:
+            # Write WAV first, then convert to MP3 using ffmpeg
+            mp3_path = output_path.with_suffix(".mp3")
+            # Write as WAV temporarily
+            recons.write(output_path)
+            # Convert to MP3 with LAME codec using ffmpeg
+            cmd = [
+                "ffmpeg",
+                "-i",
+                str(output_path),
+                "-acodec",
+                "libmp3lame",
+                "-ac",
+                "1",  # mono
+                "-ab",
+                MP3_BITRATE,
+                "-y",  # overwrite output file
+                str(mp3_path),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            # Remove the temporary WAV file
+            output_path.unlink()
 
 
 if __name__ == "__main__":

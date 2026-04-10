@@ -28,6 +28,8 @@ def encode(
     model_type: str = "44khz",
     win_duration: float = 5.0,
     verbose: bool = False,
+    fp16: bool = False,
+    skip_normalize: bool = False,
 ):
     """Encode audio files in input path to .dac format.
 
@@ -57,9 +59,20 @@ def encode(
         tag=model_tag,
         load_path=weights_path,
     )
-    generator.to(device)
+    generator.to(device, dtype=torch.float16 if fp16 else torch.float32)
     generator.eval()
-    kwargs = {"n_quantizers": n_quantizers}
+    kwargs = {
+        "n_quantizers": n_quantizers,
+    }
+
+    if fp16:
+        print("[info] encoding in fp16")
+
+    if skip_normalize:
+        print("[info] skipping normalize")
+        normalize_db = None
+    else:
+        normalize_db = -16
 
     # Find all audio files in input path
     input = Path(input)
@@ -72,8 +85,16 @@ def encode(
         # Load file
         signal = AudioSignal(audio_files[i])
 
-        # Encode audio to .dac format
-        artifact = generator.compress(signal, win_duration, verbose=verbose, **kwargs)
+        with torch.amp.autocast(
+            device_type=device, dtype=torch.float16 if fp16 else torch.float32
+        ):
+            artifact = generator.compress(
+                signal,
+                win_duration,
+                verbose=verbose,
+                normalize_db=normalize_db,
+                **kwargs
+            )
 
         # Compute output path
         relative_path = audio_files[i].relative_to(input)

@@ -25,7 +25,8 @@ def get_metrics(signal_path, recons_path, state):
     output = {}
     signal = AudioSignal(signal_path)
     recons = AudioSignal(recons_path)
-    for sr in [22050, 44100]:
+    # for sr in [22050, 44100]:
+    for sr in [44100]:
         x = signal.clone().resample(sr)
         y = recons.clone().resample(sr)
         k = "22k" if sr == 22050 else "44k"
@@ -93,7 +94,7 @@ def evaluate(
                         get_metrics,
                         audio_files[i],
                         output
-                        / "/".join(str(audio_files[i]).split("/")[-3:-1])
+                        / "/".join(str(audio_files[i]).split("/")[-2:-1])
                         / audio_files[i].name.replace(".flac", ".wav"),
                         state,
                     )

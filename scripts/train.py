@@ -27,8 +27,30 @@ warnings.filterwarnings("ignore", category=UserWarning)
 torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
 
+
 # Optimizers
-AdamW = argbind.bind(torch.optim.AdamW, "generator", "discriminator")
+@argbind.bind("generator", "discriminator")
+def AdamW(
+    params,
+    lr: float = 1e-3,
+    betas: list = [0.9, 0.999],
+    eps: float = 1e-8,
+    weight_decay: float = 0.01,
+    amsgrad: bool = False,
+    **kwargs,
+):
+    """Wrapper for torch.optim.AdamW with argbind-friendly type hints."""
+    return torch.optim.AdamW(
+        params,
+        lr=lr,
+        betas=tuple(betas),
+        eps=eps,
+        weight_decay=weight_decay,
+        amsgrad=amsgrad,
+        **kwargs,
+    )
+
+
 Accelerator = argbind.bind(ml.Accelerator, without_prefix=True)
 
 
@@ -119,6 +141,8 @@ class State:
     val_data: AudioDataset
 
     tracker: Tracker
+    save_generator_fp16: bool
+    generator_fp16: bool
 
 
 @argbind.bind(without_prefix=True)
@@ -132,6 +156,8 @@ def load(
     load_weights: bool = False,
     freeze_encoder: bool = False,
     freeze_quantizer: bool = False,
+    save_generator_fp16: bool = False,
+    generator_fp16: bool = False,
 ):
     generator, g_extra = None, {}
     discriminator, d_extra = None, {}
@@ -141,6 +167,7 @@ def load(
             "folder": f"{save_path}/{tag}",
             "map_location": "cpu",
             "package": not load_weights,
+            "weights_only": False,
         }
         tracker.print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
         if (Path(kwargs["folder"]) / "dac").exists():
@@ -162,10 +189,18 @@ def load(
             p.requires_grad_(False)
 
     tracker.print(generator)
-    tracker.print(discriminator)
+    # tracker.print(discriminator)
 
     generator = accel.prepare_model(generator)
     discriminator = accel.prepare_model(discriminator)
+
+    if generator_fp16:
+        generator = generator.half()
+        tracker.print("[info] generator in native fp16")
+
+        # set save generator fp16 to true
+        save_generator_fp16 = True
+        tracker.print("[info] save generator fp16 set automatically to true")
 
     with argbind.scope(args, "generator"):
         optimizer_g = AdamW(generator.parameters(), use_zero=accel.use_ddp)
@@ -211,6 +246,8 @@ def load(
         tracker=tracker,
         train_data=train_data,
         val_data=val_data,
+        save_generator_fp16=save_generator_fp16,
+        generator_fp16=generator_fp16,
     )
 
 
@@ -223,8 +260,9 @@ def val_loop(batch, state, accel):
         batch["signal"].clone(), **batch["transform_args"]
     )
 
-    out = state.generator(signal.audio_data, signal.sample_rate)
-    recons = AudioSignal(out["audio"], signal.sample_rate)
+    audio = signal.audio_data.half() if state.generator_fp16 else signal.audio_data
+    out = state.generator(audio, signal.sample_rate)
+    recons = AudioSignal(out["audio"].float(), signal.sample_rate)
 
     return {
         "loss": state.mel_loss(recons, signal),
@@ -310,10 +348,12 @@ def checkpoint(state, save_iters, save_path):
             "tracker.pth": state.tracker.state_dict(),
             "metadata.pth": metadata,
         }
-        accel.unwrap(state.generator).metadata = metadata
-        accel.unwrap(state.generator).save_to_folder(
-            f"{save_path}/{tag}", generator_extra
-        )
+        gen = accel.unwrap(state.generator)
+        gen.metadata = metadata
+        if state.save_generator_fp16:
+            gen.half().save_to_folder(f"{save_path}/{tag}", generator_extra)
+        else:
+            gen.save_to_folder(f"{save_path}/{tag}", generator_extra)
         discriminator_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
             "scheduler.pth": state.scheduler_d.state_dict(),

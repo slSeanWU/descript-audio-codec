@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 import argbind
 from audiotools import ml
@@ -41,7 +42,10 @@ __MODEL_URLS__ = {
 
 @argbind.bind(group="download", positional=True, without_prefix=True)
 def download(
-    model_type: str = "44khz", model_bitrate: str = "8kbps", tag: str = "latest"
+    model_type: str = "44khz",
+    model_bitrate: str = "8kbps",
+    tag: str = "latest",
+    local_path: Optional[str] = None,
 ):
     """
     Function that downloads the weights file from URL if a local cache is not found.
@@ -85,13 +89,17 @@ def download(
             f"Could not find model with tag {tag} and model type {model_type}"
         )
 
-    local_path = (
-        Path.home()
-        / ".cache"
-        / "descript"
-        / "dac"
-        / f"weights_{model_type}_{model_bitrate}_{tag}.pth"
-    )
+    if local_path is None:
+        local_path = (
+            Path.home()
+            / ".cache"
+            / "descript"
+            / "dac"
+            / f"weights_{model_type}_{model_bitrate}_{tag}.pth"
+        )
+    else:
+        local_path = Path(local_path)
+
     if not local_path.exists():
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
